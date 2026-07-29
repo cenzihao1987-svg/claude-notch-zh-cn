@@ -270,7 +270,7 @@ final class AppModel {
     func refreshNow() {
         refresh()
         switch selectedProvider {
-        case .claude: fetchLimits()
+        case .claude: fetchLimits(force: true)   // re-read the session, e.g. after a re-login
         case .codex: fetchCodexUsage()
         }
     }
@@ -311,10 +311,10 @@ final class AppModel {
     /// Fetch live claude.ai limits off-main (Keychain prompt appears on first run).
     /// Only replaces the last-known-good limits with a response that actually carries a
     /// session %, so a partial/failed read can never clobber correct data.
-    func fetchLimits() {
+    func fetchLimits(force: Bool = false) {
         guard !isPaused, selectedProvider == .claude else { return }
         Task { [claudeAPI] in
-            if let l = await claudeAPI.fetch(), l.sessionPct != nil { self.applyLimits(l) }
+            if let l = await claudeAPI.fetch(force: force), l.sessionPct != nil { self.applyLimits(l) }
         }
     }
 
