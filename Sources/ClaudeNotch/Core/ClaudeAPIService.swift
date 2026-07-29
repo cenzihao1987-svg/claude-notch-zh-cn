@@ -32,18 +32,77 @@ actor ClaudeAPIService {
         let keychainService: String?   // nil => Firefox-style plaintext cookies.sqlite
     }
 
-    func fetch() async -> ClaudeLimits? {
-        for source in sources() {
+    /// Derived Safe Storage keys, cached for the process lifetime. Reading one can make macOS ask
+    /// the user to authorize Keychain access, so we ask AT MOST once per service per launch
+    /// instead of once per 60-second refresh (which is what made the prompt feel relentless).
+    /// nil value = the read failed (typically the user clicked Deny). Cached too, so a denial
+    /// doesn't re-prompt on the next cycle; `fetch(force:)` clears it so Refresh now can retry.
+    private var keyCache: [String: Data?] = [:]
+    /// Sources that just failed (no session, denied Keychain, logged out): skipped until this
+    /// date so a dead source can't re-prompt every cycle.
+    private var backoffUntil: [String: Date] = [:]
+    private let backoff: TimeInterval = 900          // 15 min
+    /// The working session, reused without touching the Keychain or the cookie store at all.
+    private var sessionCache: (cookies: [String: String], org: String, source: String, at: Date)?
+    private let sessionTTL: TimeInterval = 1800      // 30 min, then re-read to pick up a re-login
+    private let lastGoodKey = "lastGoodCookieSource"
+    /// Same idea for the Claude Code CLI's OAuth token (another Keychain item).
+    private var cliTokenCache: (token: String, expiresAt: Date)?
+    private var cliTokenBackoffUntil: Date?
+
+    /// `force` (the Refresh now menu action) drops the cached session and any source backoffs so
+    /// a fresh login is picked up immediately. Cached Keychain keys are kept — re-reading those is
+    /// exactly what raises the authorization prompt, and the key itself never changes.
+    func fetch(force: Bool = false) async -> ClaudeLimits? {
+        if force {
+            sessionCache = nil
+            backoffUntil.removeAll()
+            cliTokenBackoffUntil = nil
+            keyCache = keyCache.filter { $0.value != nil }   // retry denials, keep good keys
+        }
+        // 1. Reuse the known-good session: no Keychain, no SQLite, no prompt.
+        if let s = sessionCache, Date().timeIntervalSince(s.at) < sessionTTL {
+            switch await request(org: s.org, cookies: s.cookies, source: s.source) {
+            case .ok(let limits): return limits
+            case .offline: return nil          // keep the cache, try again on the next tick
+            case .rejected: sessionCache = nil // really dead: fall through and re-read once
+            }
+        }
+        // 2. Try stores, the one that worked last time first, so a healthy setup only ever
+        //    touches a single Keychain item.
+        for source in orderedSources() {
+            if let until = backoffUntil[source.name], until > Date() { continue }
             guard let cookies = readCookies(from: source),
                   let org = cookies["lastActiveOrg"], cookies["sessionKey"] != nil
-            else { continue }
-            if let limits = await request(org: org, cookies: cookies, source: source.name) {
+            else {
+                backoffUntil[source.name] = Date().addingTimeInterval(backoff)
+                continue
+            }
+            switch await request(org: org, cookies: cookies, source: source.name) {
+            case .ok(let limits):
+                sessionCache = (cookies, org, source.name, Date())
+                backoffUntil[source.name] = nil
+                UserDefaults.standard.set(source.name, forKey: lastGoodKey)
                 return limits
+            case .offline:
+                return nil   // don't blame the source, don't probe the others (no new prompts)
+            case .rejected:
+                backoffUntil[source.name] = Date().addingTimeInterval(backoff)
             }
         }
         // Terminal-only fallback: the Claude Code CLI's own OAuth token, so users with neither
         // Claude Desktop nor a logged-in browser still get real numbers.
         return await fetchFromCLIToken()
+    }
+
+    /// Candidate stores with the last known-good one moved to the front.
+    private func orderedSources() -> [Source] {
+        let all = sources()
+        guard let last = UserDefaults.standard.string(forKey: lastGoodKey),
+              let i = all.firstIndex(where: { $0.name == last }) else { return all }
+        var out = all
+        out.insert(out.remove(at: i), at: 0)
+        return out
     }
 
     /// Candidate session stores, most-likely first. Only those actually present are returned.
@@ -80,24 +139,35 @@ actor ClaudeAPIService {
         return out
     }
 
-    private func request(org: String, cookies: [String: String], source: String) async -> ClaudeLimits? {
-        guard let url = URL(string: "https://claude.ai/api/organizations/\(org)/usage") else { return nil }
+    /// A network blip must not be mistaken for a dead session: that would throw away good caches
+    /// and walk every other cookie store (raising fresh Keychain prompts) over a dropped Wi-Fi.
+    private enum Outcome {
+        case ok(ClaudeLimits)
+        case rejected      // reached the server, it refused: session really is dead
+        case offline       // never reached the server: keep every cache, just retry next tick
+    }
+
+    private func request(org: String, cookies: [String: String], source: String) async -> Outcome {
+        guard let url = URL(string: "https://claude.ai/api/organizations/\(org)/usage")
+        else { return .rejected }
         let header = cookies.map { "\($0)=\($1)" }.joined(separator: "; ")
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.setValue(header, forHTTPHeaderField: "Cookie")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
                      forHTTPHeaderField: "User-Agent")
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200,
+        let data: Data, resp: URLResponse
+        do { (data, resp) = try await URLSession.shared.data(for: req) }
+        catch { return .offline }
+        guard (resp as? HTTPURLResponse)?.statusCode == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
+        else { return .rejected }
         var limits = parse(obj, source: source)
         if let (minor, currency) = await prepaidBalance(org: org, cookieHeader: header) {
             limits.creditsBalanceMinor = minor
             limits.creditsCurrency = currency
         }
-        return limits
+        return .ok(limits)
     }
 
     /// Purchased usage-credit balance — the "Current balance" figure on claude.ai's Usage credits
@@ -191,7 +261,22 @@ actor ClaudeAPIService {
     /// `/usage`. Read-only: we use the token only while it is still valid and never refresh it, so
     /// the CLI's own login is never disturbed (an expired token just falls through to nil).
     private func fetchFromCLIToken() async -> ClaudeLimits? {
-        guard let (token, expiresAt) = cliOAuthToken(), expiresAt > Date(),
+        if let until = cliTokenBackoffUntil, until > Date() { return nil }
+        // Reuse the cached token while it's still valid: this read hits the Keychain too, so it
+        // must not run every refresh either.
+        if let cached = cliTokenCache, cached.expiresAt > Date() {
+            return await usageWithCLIToken(cached.token)
+        }
+        guard let (token, expiresAt) = cliOAuthToken(), expiresAt > Date() else {
+            cliTokenBackoffUntil = Date().addingTimeInterval(backoff)
+            return nil
+        }
+        cliTokenCache = (token, expiresAt)
+        return await usageWithCLIToken(token)
+    }
+
+    private func usageWithCLIToken(_ token: String) async -> ClaudeLimits? {
+        guard
               let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -294,7 +379,13 @@ actor ClaudeAPIService {
     }
 
     /// AES key = PBKDF2(SHA1, "<App> Safe Storage" password, "saltysalt", 1003, 16).
+    ///
+    /// Cached per service for the process lifetime: this is the call that can raise the macOS
+    /// "wants to use your confidential information stored in …" prompt, so it must not run on
+    /// every refresh. A denial is also remembered (as a backoff on the owning source) so the
+    /// user isn't asked again a minute later.
     private func safeStorageKey(service: String) -> Data? {
+        if let cached = keyCache[service] { return cached }   // includes a cached denial (nil)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -303,7 +394,10 @@ actor ClaudeAPIService {
         ]
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let pw = item as? Data else { return nil }
+              let pw = item as? Data else {
+            keyCache[service] = Data?.none   // denied or missing: don't ask again this launch
+            return nil
+        }
         var key = Data(count: 16)
         let salt = Array("saltysalt".utf8)
         let ok = key.withUnsafeMutableBytes { kb in
@@ -315,7 +409,9 @@ actor ClaudeAPIService {
                     kb.baseAddress!.assumingMemoryBound(to: UInt8.self), 16)
             }
         }
-        return ok == kCCSuccess ? key : nil
+        guard ok == kCCSuccess else { keyCache[service] = Data?.none; return nil }
+        keyCache[service] = key
+        return key
     }
 
     /// Chromium "v10" AES-128-CBC (IV = 16 × 0x20). Newer builds prepend a 32-byte

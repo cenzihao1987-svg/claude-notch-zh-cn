@@ -33,7 +33,21 @@ APPDIR="$DIST/$APP_NAME.app"
 if [ -z "${SIGN_ID:-}" ]; then
   SIGN_ID="$(security find-identity -v -p codesigning \
     | awk -F'"' '/Developer ID Application/{print $2; exit}')"
-  [ -z "$SIGN_ID" ] && SIGN_ID="-"
+  if [ -z "$SIGN_ID" ]; then
+    # Ad-hoc signing gives the app a cdhash-based designated requirement, so every rebuild is a
+    # DIFFERENT identity to macOS: users' "Always Allow" Keychain grants stop applying and the
+    # authorization prompt returns after each update (issue #6). Never ship that by accident.
+    if [ -n "${ALLOW_ADHOC:-}" ]; then
+      echo "⚠︎ No Developer ID identity — ad-hoc signing (LOCAL BUILD ONLY, do not distribute)"
+      SIGN_ID="-"
+    else
+      echo "✗ No 'Developer ID Application' identity found in the keychain."
+      echo "  Releases must be signed with a stable identity, or users get repeated Keychain"
+      echo "  prompts after every update. Set SIGN_ID=… or re-run with ALLOW_ADHOC=1 for a"
+      echo "  throwaway local build."
+      exit 1
+    fi
+  fi
 fi
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 
