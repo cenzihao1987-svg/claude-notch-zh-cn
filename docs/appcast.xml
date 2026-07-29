@@ -3,6 +3,26 @@
     <channel>
         <title>Claude Notch</title>
         <item>
+            <title>0.3.2</title>
+            <description><![CDATA[
+                <h2>Far fewer Keychain prompts</h2>
+                <p>The app was re-reading your browser's Safe Storage password from the Keychain on every 60-second refresh, once per installed browser. If macOS asked you to authorize that each time, it asked constantly.</p>
+                <ul>
+                    <li>It now reads at most once per store per launch, and normally once ever: the key is cached, a working session is reused for 30 minutes, and the store that worked last is remembered</li>
+                    <li>Stores that can't provide a session back off instead of retrying every minute</li>
+                    <li>A dropped connection no longer looks like a signed-out session, so caches survive a network blip</li>
+                    <li>Refresh now re-reads your session immediately, so a fresh login is picked up at once</li>
+                </ul>
+                <p>Fixes issue #6, reported by <a href="https://github.com/hexxt-git">@hexxt-git</a>.</p>
+            ]]></description>
+            <pubDate>Wed, 29 Jul 2026 23:02:23 +0200</pubDate>
+            <sparkle:version>0.3.2</sparkle:version>
+            <sparkle:shortVersionString>0.3.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/stevemcqueenz/claude-notch-tracker/releases/download/v0.3.2/ClaudeNotch.zip" length="1693429" type="application/octet-stream" sparkle:edSignature="FclLxVz3pEHDbPM4O5xBMeA3M+GSTS1a2stJiCj6N4b0+Gq0Pkc2+kMRHTzXxJLSYZF78vzVSio5T4wSHAANBw=="/>
+        </item>
+        <item>
             <title>0.3.1</title>
             <description><![CDATA[
                 <h2>Polish and clarity</h2>
