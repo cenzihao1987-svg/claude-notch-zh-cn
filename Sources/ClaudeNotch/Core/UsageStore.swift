@@ -78,8 +78,12 @@ final class UsageStore {
         let blocks = BlockCalculator.blocks(from: events)
         let active = blocks.last.flatMap { $0.contains(now) ? $0 : nil }
         let maxBlockTokens = blocks.map(\.totalTokens).max() ?? 0
-        let estimate = maxBlockTokens > 0
-            ? min(1, Double(active?.totalTokens ?? 0) / Double(maxBlockTokens)) : 0
+        // With only one block the active block IS the largest one, so the ratio is 1.0 by
+        // construction — a hard-coded 100% dressed up as a measurement. Since the log window is
+        // just the last two days, one block is the normal case for anyone who used Claude
+        // recently. Report nothing rather than a number that is always wrong.
+        let estimate: Double? = blocks.count >= 2 && maxBlockTokens > 0
+            ? min(1, Double(active?.totalTokens ?? 0) / Double(maxBlockTokens)) : nil
 
         return UsageSnapshot(
             blockRemaining: active?.remaining(at: now),

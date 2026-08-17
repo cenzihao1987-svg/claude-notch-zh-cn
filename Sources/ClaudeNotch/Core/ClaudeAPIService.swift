@@ -49,6 +49,9 @@ actor ClaudeAPIService {
     /// Same idea for the Claude Code CLI's OAuth token (another Keychain item).
     private var cliTokenCache: (token: String, expiresAt: Date)?
     private var cliTokenBackoffUntil: Date?
+    /// And for Claude Desktop's own OAuth token, cached in its config.json.
+    private var desktopTokenCache: (token: String, expiresAt: Date)?
+    private var desktopTokenBackoffUntil: Date?
 
     /// `force` (the Refresh now menu action) drops the cached session and any source backoffs so
     /// a fresh login is picked up immediately. Cached Keychain keys are kept — re-reading those is
@@ -58,6 +61,7 @@ actor ClaudeAPIService {
             sessionCache = nil
             backoffUntil.removeAll()
             cliTokenBackoffUntil = nil
+            desktopTokenBackoffUntil = nil
             keyCache = keyCache.filter { $0.value != nil }   // retry denials, keep good keys
         }
         // 1. Reuse the known-good session: no Keychain, no SQLite, no prompt.
@@ -90,6 +94,11 @@ actor ClaudeAPIService {
                 backoffUntil[source.name] = Date().addingTimeInterval(backoff)
             }
         }
+        // Claude Desktop's own OAuth token, cached in its config.json. This hits
+        // api.anthropic.com, which serves no Cloudflare challenge — so it still works when the
+        // claude.ai calls above are answered with one, which is what happens on many networks.
+        if let limits = await fetchFromDesktopOAuth() { return limits }
+
         // Terminal-only fallback: the Claude Code CLI's own OAuth token, so users with neither
         // Claude Desktop nor a logged-in browser still get real numbers.
         return await fetchFromCLIToken()
@@ -275,7 +284,7 @@ actor ClaudeAPIService {
         return await usageWithCLIToken(token)
     }
 
-    private func usageWithCLIToken(_ token: String) async -> ClaudeLimits? {
+    private func usageWithCLIToken(_ token: String, source: String = "Claude Code") async -> ClaudeLimits? {
         guard
               let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return nil }
         var req = URLRequest(url: url, timeoutInterval: 15)
@@ -286,7 +295,56 @@ actor ClaudeAPIService {
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
-        return parse(obj, source: "Claude Code")
+        return parse(obj, source: source)
+    }
+
+    // MARK: - Claude Desktop (OAuth token in its own config.json)
+
+    /// Fetch usage with Claude Desktop's OAuth token. Same endpoint as the CLI path, but the
+    /// token comes from Desktop's config instead of the Keychain — which matters because a user
+    /// can have Desktop installed while the CLI is pointed at a third-party API base (and so has
+    /// no Anthropic token at all). Read-only: the token is used while valid and never refreshed,
+    /// so Desktop's own login is never disturbed.
+    private func fetchFromDesktopOAuth() async -> ClaudeLimits? {
+        if let until = desktopTokenBackoffUntil, until > Date() { return nil }
+        if let cached = desktopTokenCache, cached.expiresAt > Date() {
+            return await usageWithCLIToken(cached.token, source: "Claude Desktop")
+        }
+        guard let (token, expiresAt) = desktopOAuthToken() else {
+            desktopTokenBackoffUntil = Date().addingTimeInterval(backoff)
+            return nil
+        }
+        desktopTokenCache = (token, expiresAt)
+        return await usageWithCLIToken(token, source: "Claude Desktop")
+    }
+
+    /// Claude Desktop keeps its OAuth tokens in config.json under `oauth:tokenCache`: a base64
+    /// blob encrypted with the very same Safe Storage key as its cookies. Inside is a dictionary
+    /// keyed by account/device/scope; entries carry `token` and an `expiresAt` in epoch millis.
+    /// We take the longest-lived unexpired entry, since Desktop keeps several with different
+    /// scopes and lets the narrow ones lapse.
+    private func desktopOAuthToken() -> (token: String, expiresAt: Date)? {
+        let config = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Claude/config.json")
+        guard let data = try? Data(contentsOf: config),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let encoded = root["oauth:tokenCache"] as? String,
+              let blob = Data(base64Encoded: encoded),
+              let key = safeStorageKey(service: "Claude Safe Storage"),
+              let json = decrypt(blob, key: key),
+              let entries = try? JSONSerialization.jsonObject(with: Data(json.utf8))
+                as? [String: Any]
+        else { return nil }
+
+        var best: (token: String, expiresAt: Date)?
+        for case let entry as [String: Any] in entries.values {
+            guard let token = entry["token"] as? String, !token.isEmpty,
+                  let millis = (entry["expiresAt"] as? NSNumber)?.doubleValue else { continue }
+            let expiresAt = Date(timeIntervalSince1970: millis / 1000)
+            guard expiresAt > Date() else { continue }
+            if best == nil || expiresAt > best!.expiresAt { best = (token, expiresAt) }
+        }
+        return best
     }
 
     /// The Claude Code CLI stores its OAuth credentials as JSON in the login Keychain under the

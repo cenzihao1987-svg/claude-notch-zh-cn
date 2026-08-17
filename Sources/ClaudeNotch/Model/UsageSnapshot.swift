@@ -26,7 +26,8 @@ struct UsageSnapshot: Equatable, Sendable {
     var topModel: String?
     /// Rough fallback usage (0…1): active-block tokens ÷ largest block ever seen.
     /// Used only until the authoritative statusline rate-limit % is available.
-    var blockUsageEstimate: Double = 0
+    /// nil when there aren't enough blocks for the ratio to mean anything (see UsageStore).
+    var blockUsageEstimate: Double?
 
     var isEmpty: Bool { tokensToday == 0 && blockRemaining == nil }
 
