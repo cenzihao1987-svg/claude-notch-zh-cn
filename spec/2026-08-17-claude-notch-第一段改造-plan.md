@@ -74,7 +74,12 @@ import OSLog
     private static let log = Logger(subsystem: "com.claudenotch.app", category: "refresh")
 ```
 
-- [ ] **Step 2: 加分级判断与两个 tick 方法**
+- [x] **Step 2: 加分级判断与两个 tick 方法**
+
+> ⚠️ **下面这段代码已被 Step 10 的事故推翻，不要照抄。** 15/45 会触发 429，且
+> `shouldRefresh` 里那句「一直失败就该一直重试」正是限流自我维持的根因。
+> 最终实现见 `AppModel.swift` 与 design 文档「事故」一节：常量 30/90、节流基准改为
+> 「上次发起时刻」、失败翻倍退避、节流下沉到 `fetchLimits`、加 in-flight 标记。
 
 在 `AppModel` 中 `func fetchLimits(force: Bool = false)` 的正上方插入：
 
@@ -216,11 +221,21 @@ Expected（刘海保持折叠）：`refresh claude` 每 45–60 秒一条。因�
 
 Expected：展开瞬间立刻一条 `refresh`（Step 6 的效果），随后每 15 秒一条。折叠后恢复到 45–60 秒一条。
 
-- [ ] **Step 10: 挂 30 分钟看有没有被限流**
+- [x] **Step 10: 挂 30 分钟看有没有被限流** — ⚠️ **这一步命中了，已回退**
 
 保持展开态挂 30 分钟，然后确认刘海数字仍然正常、不是 `—`。
 
 Expected：数字正常。若变成 `—` 或长时间不更新，说明 `api.anthropic.com` 开始拒绝——把 Step 2 的 `refreshTick` 改成 30、`collapsedInterval` 改成 90，重新走 Step 4/5/8。这是可回退的两个常量。
+
+**实际结果**：周额度确实变成了 `—`，用真 token 探端点得 `HTTP 429 rate_limit_error`。常量已按上面回退到 30/90（commit `14e2e47`）。
+
+但**这一步的预案不够**，回退常量只治了一半：
+
+1. 限流会**自我维持**——服务层非 200 不设 backoff，本层又用「上次成功时刻」做节流基准，取数一直失败就等于每个 tick 都放行。光把 15 改成 30 只是把死循环放慢一倍，出不去。已把基准改成「上次发起时刻」并加失败翻倍退避（90→180→360→720，上限 900）。
+2. 节流只拦了定时器。**展开和前台跟随切换也是取数入口，切窗口比 tick 频繁得多**。已把节流从 `tickLimits` 下沉到 `fetchLimits`。
+3. 钥匙串授权框不点时取数会无限期挂住，每 90 秒堆一个 Task，一点「允许」就把积压请求全部发出。已加 `claudeInFlight`。
+
+细节与实测数据见 design 文档的「事故」一节。
 
 ---
 
