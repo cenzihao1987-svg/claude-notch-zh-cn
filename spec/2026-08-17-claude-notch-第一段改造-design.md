@@ -1,7 +1,7 @@
 # Claude Notch 第一段改造设计：刷新分级与前台跟随切换
 
 日期：2026-08-17
-状态：待实施
+状态：已实施（展开态一项待龟目视确认，见文末「验证结果」）
 上游版本：`94839a4`（v0.3.2）
 
 ## 背景
@@ -156,6 +156,40 @@ UserDefaults.standard.set(provider.rawValue, forKey: "selectedProvider")
 - **接口频率**：展开态 15 秒提速的是 `api.anthropic.com/api/oauth/usage`（官方端点 + 官方 token），不是 claude.ai 的 cookie 接口——后者被 403 退避锁在 15 分钟一次。若观察到 429 或鉴权异常，退回 30 秒。这是可回退的单一常量。
 - **激活通知频率**：`didActivateApplicationNotification` 在频繁切换应用时触发密集，靠「结果相同则返回」拦截，不会造成请求风暴。
 - **上游合并**：改动集中在两个文件的少量位置，上游 v0.3.2 后已近三周无提交，合并冲突风险低。
+
+## 验证结果（2026-08-17 实跑）
+
+靠新增的 `os.Logger`（subsystem `com.claudenotch.app`）实测，不是推演：
+
+| 行为 | 证据 |
+|---|---|
+| tick 周期 = 15 秒 | 连续多条日志间隔精确 15.000 秒 |
+| 折叠态 45 秒节流 | `codex, 57.444819s since last`（阈值 45 + 15 秒粒度 → 落在 45 或 60，符合） |
+| 未选中 provider 不打日志 | 90 秒窗口：codex 0 条 / claude 6 条 |
+| 前台跟随切换 | 同一进程内 provider 由 codex 自动切成 claude（Claude.app 激活时） |
+| 手动选择不被自动切换污染 | 自动切换后 `defaults read` 仍为手动写入的值 |
+
+最强的一段证据是同一个进程内两条线的行为差异：codex 侧 `fetchedAt` 有效，走 45 秒节流分支得 57.4 秒；被前台跟随切到 claude 后 `fetchedAt` 为 nil，走「失败就重试」分支得 15 秒。**同一个 `shouldRefresh` 的两个分支各自被实测覆盖**，不需要再造用例。
+
+**待龟目视确认**：展开态（展开瞬间立刻刷新 + 期间每 15 秒）需要点开面板，无法脚本化。注意展开分支 `if isExpanded { return true }` 是无条件返回，「每个 tick 都刷 = 15 秒」这一点已由上表第一行证明；待确认的只是 `isExpanded` 状态本身与 `didSet` 的传递。
+
+### 实跑中修掉的一个缺陷
+
+未选中的那个 provider 每 15 秒打一条「刷新了」，而 `fetch` 一进去就被 `guard selectedProvider` 挡掉——日志在记录不存在的刷新。计划里原本把这个空转当成无害取舍（「开销只是一次字典查询」），加了日志之后前提就变了：一条说谎的日志比没有日志更糟。两个 tick 都补上了 `guard !isPaused, selectedProvider == ...`。
+
+## 遗留：Claude 侧取数被拒（独立于本次改动）
+
+验证期间 Claude 百分比取不到数（`fetchedAt` 恒为 nil，`applyLimits` 从未被调用）。**与刷新分级无关**，证据链如下，留给后续排查，避免重复走一遍：
+
+- 用**假 token** 探 `api.anthropic.com/api/oauth/usage` 得 **401 而非 429** → 端点可达、本机 IP 未被限流，**排除提速导致限流**这个最需要担心的假设
+- `nettop` 跨 20 秒采样：约 250 字节往返 → 请求确实发出，收到的是极小的错误响应，不是完整 usage JSON
+- 钥匙串项 `Claude Safe Storage / Claude Key` 存在；`config.json` 的 `oauth:tokenCache` blob 2396 字节；Claude Desktop 在运行且当天 15:07:48 刷新过该文件 → **数据源齐备**
+- `sample` 确认进程未阻塞在 `SecItemCopyMatching`；`lastGoodCookieSource` 不存在 → cookie 路径从未成功，一直靠 OAuth 分支
+- 当天早些时候同一路径是通的（实测 five_hour 约 45%），变化点只有时间流逝与 token 轮换
+
+**最可疑处**：`desktopOAuthToken()` 取「`expiresAt` 最长的未过期条目」，而最长寿的那个未必带 usage scope。要确证需看到 HTTP 状态码，那在 `ClaudeAPIService.swift` 内——属 CLAUDE.md 红线，需龟单独授权后**纯新增**日志。
+
+另注意一个上游缺陷：`usageWithCLIToken` 非 200 一律返回 nil，且 token 缓存有效时**请求失败不设 backoff**（backoff 只在读 token 失败时设），于是「token 有效 + 请求持续被拒」会每个 tick 重试一次。本次提速把它从 60 秒放大到 15 秒。本次未动（红线），但二期若碰数据层应一并处理。
 
 ## 二期备忘
 
