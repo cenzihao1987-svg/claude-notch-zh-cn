@@ -25,7 +25,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.start()
         Updater.shared.start()                          // Sparkle auto-updates
         window = IslandWindow(model: model)
-        monitor.start { [weak self] in self?.sync() }   // fires on display / Claude changes
+        monitor.start(onChange: { [weak self] in self?.sync() },   // display / Claude changes
+                      onFrontmostProvider: { [weak self] provider in
+                          self?.model.selectProvider(provider, persist: false)
+                      })
         observeExpansion()
         sync()
         // Hide-in-fullscreen: Space changes are the primary trigger; the poll catches the

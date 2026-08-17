@@ -300,13 +300,14 @@ final class AppModel {
         case .codex: fetchCodexUsage()
         }
     }
-    func selectProvider(_ provider: UsageProviderID) {
+    /// `persist: false` 用于前台跟随的自动切换——只临时生效，不覆盖用户手动选择的记忆。
+    func selectProvider(_ provider: UsageProviderID, persist: Bool = true) {
+        // 先持久化再判重：自动跟随可能已把 selectedProvider 切成了用户想固定的那个，
+        // 此时菜单里再点它一次必须能写进记忆，否则重启会跳回另一个。
+        if persist { UserDefaults.standard.set(provider.rawValue, forKey: "selectedProvider") }
+        guard provider != selectedProvider else { return }   // 同 App 内换窗口也会触发激活通知
         selectedProvider = provider
-        UserDefaults.standard.set(provider.rawValue, forKey: "selectedProvider")
-        switch provider {
-        case .claude: fetchLimits()
-        case .codex: fetchCodexUsage()
-        }
+        refreshSelectedProvider()
     }
     /// Advance to the next provider (icon click) — with two providers this is a toggle.
     func cycleProvider() {

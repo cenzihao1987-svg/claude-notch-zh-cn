@@ -248,12 +248,16 @@ Expected：数字正常。若变成 `—` 或长时间不更新，说明 `api.an
 ```swift
     /// `persist: false` 用于前台跟随的自动切换——只临时生效，不覆盖用户手动选择的记忆。
     func selectProvider(_ provider: UsageProviderID, persist: Bool = true) {
+        // 先持久化再判重：自动跟随可能已把 selectedProvider 切成了用户想固定的那个，
+        // 此时菜单里再点它一次必须能写进记忆，否则重启会跳回另一个。
+        if persist { UserDefaults.standard.set(provider.rawValue, forKey: "selectedProvider") }
         guard provider != selectedProvider else { return }   // 同 App 内换窗口也会触发激活通知
         selectedProvider = provider
-        if persist { UserDefaults.standard.set(provider.rawValue, forKey: "selectedProvider") }
         refreshSelectedProvider()
     }
 ```
+
+> 顺序不能反。把 `guard` 写在持久化之前会漏掉这个场景：自动跟随已切到 Codex → 用户在右键菜单点 Codex 想固定它 → `provider == selectedProvider` 被 guard 挡掉 → UserDefaults 没写 → 重启跳回 Claude。
 
 默认值 `true` 保证 `cycleProvider()` 与菜单等现有调用点一行都不用改。`refreshSelectedProvider()` 是 Task 1 Step 6 建的。
 

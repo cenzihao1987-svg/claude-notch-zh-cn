@@ -15,10 +15,15 @@ final class AppMonitor {
     private(set) var notchHeight: CGFloat = 0
 
     private let claudeBundleIDs = ["com.anthropic.claudefordesktop", "com.anthropic.claude"]
+    /// ChatGPT.app 的真实 bundle id，实测确认——按常识猜 com.openai.chat 会猜错。
+    private let codexBundleIDs = ["com.openai.codex"]
     private var onChange: (() -> Void)?
+    private var onFrontmostProvider: ((UsageProviderID) -> Void)?
 
-    func start(onChange: @escaping () -> Void) {
+    func start(onChange: @escaping () -> Void,
+               onFrontmostProvider: @escaping (UsageProviderID) -> Void = { _ in }) {
         self.onChange = onChange
+        self.onFrontmostProvider = onFrontmostProvider
         updateNotch()
         updateClaude()
         let nc = NSWorkspace.shared.notificationCenter
@@ -28,10 +33,27 @@ final class AppMonitor {
                 Task { @MainActor in self?.updateClaude() }
             }
         }
+        nc.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+                       object: nil, queue: .main) { [weak self] note in
+            let id = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+                .bundleIdentifier
+            Task { @MainActor in self?.reportFrontmost(id) }
+        }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.updateNotch(); self?.onChange?() }
+        }
+    }
+
+    /// 前台切到 Claude 或 ChatGPT 时报告对应 provider；切到别的应用不报告，保持当前不变。
+    /// 与 updateClaude 同样只做精确匹配，不用 contains 那种模糊判断。
+    private func reportFrontmost(_ bundleID: String?) {
+        guard let bundleID else { return }
+        if claudeBundleIDs.contains(bundleID) {
+            onFrontmostProvider?(.claude)
+        } else if codexBundleIDs.contains(bundleID) {
+            onFrontmostProvider?(.codex)
         }
     }
 
