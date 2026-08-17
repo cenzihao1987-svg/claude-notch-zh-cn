@@ -18,7 +18,12 @@
 
 因此本计划的每个任务用**「改前先确认当前行为 → 改 → 实跑确认新行为」**替代「红-绿-重构」，验证手段是实跑 app 读日志，不是断言。这是刻意的偏离，不是遗漏。
 
-配套的一个前提：`ClaudeAPIService` / `CodexUsageProvider` 目前**没有任何日志**，系统统一日志里搜不到本进程的记录（`log show --predicate 'process == "ClaudeNotch"'` 返回 0 行），`nettop` 也观测不到。也就是说**不加日志就无法验证刷新间隔是否真的变了**。所以 Task 1 会加一条 `os.Logger`，并作为正式代码保留——理由见 Task 1 步骤 1。
+配套的一个前提：现有代码**没有任何日志**，`nettop` 也观测不到进程的网络时序。也就是说**不加日志就无法验证刷新间隔是否真的变了**。所以 Task 1 会加一条 `os.Logger`，并作为正式代码保留——理由见 Task 1 步骤 1。
+
+查日志时有两个坑，都实际踩过：
+
+1. **zsh 下必须用 `/usr/bin/log`**。`log` 是 shell 内建命令，直接写 `log show ...` 会报 `too many arguments`，加了 `2>/dev/null` 就变成静默返回 0 行——看起来像"日志系统里没有记录"，其实命令压根没执行。
+2. **日志级别必须用 `notice`，不能用 `debug`**。debug 级别默认不被记录，`log show --debug` 只能显示已记录的、不会追溯启用，结果同样是 0 行。
 
 ---
 
@@ -65,7 +70,7 @@ import OSLog
 在 `final class AppModel {` 的第一个属性 `private(set) var snapshot` 之前插入：
 
 ```swift
-    /// 刷新节奏的可观测性。用 `log stream --predicate 'subsystem == "com.claudenotch.app"'` 看。
+    /// 刷新节奏的可观测性。查看方式见文首「查日志时有两个坑」。
     private static let log = Logger(subsystem: "com.claudenotch.app", category: "refresh")
 ```
 
@@ -88,14 +93,14 @@ import OSLog
     private func tickLimits() {
         let last = limits?.fetchedAt
         guard shouldRefresh(since: last) else { return }
-        Self.log.debug("refresh claude, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
+        Self.log.notice("refresh claude, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
         fetchLimits()
     }
 
     private func tickCodexUsage() {
         let last = codexSnapshot.fetchedAt
         guard shouldRefresh(since: last) else { return }
-        Self.log.debug("refresh codex, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
+        Self.log.notice("refresh codex, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
         fetchCodexUsage()
     }
 ```
@@ -200,7 +205,7 @@ ALLOW_ADHOC=1 bash scripts/make-app.sh && open "dist/Claude Notch.app"
 点掉授权框后，开一个终端跑 3 分钟：
 
 ```bash
-log stream --predicate 'subsystem == "com.claudenotch.app"' --level debug
+/usr/bin/log stream --predicate 'subsystem == "com.claudenotch.app"'
 ```
 
 Expected（刘海保持折叠）：`refresh claude` 每 45–60 秒一条。因为 tick 是 15 秒、阈值是 45 秒，实际落点是 45 或 60 秒，不会更密。

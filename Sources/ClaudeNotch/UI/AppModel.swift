@@ -4,7 +4,10 @@ import SwiftUI
 
 @MainActor @Observable
 final class AppModel {
-    /// 刷新节奏的可观测性。`log stream --predicate 'subsystem == "com.claudenotch.app"'`
+    /// 刷新节奏的可观测性。查看：
+    /// `/usr/bin/log show --last 10m --predicate 'subsystem == "com.claudenotch.app"'`
+    /// 用 notice 而非 debug —— debug 级别默认根本不记录，等于没有日志。
+    /// zsh 下必须写全路径，`log` 是 shell 内建命令，会把系统命令挡掉。
     private static let log = Logger(subsystem: "com.claudenotch.app", category: "refresh")
 
     private(set) var snapshot: UsageSnapshot = .empty
@@ -341,14 +344,14 @@ final class AppModel {
     private func tickLimits() {
         let last = limits?.fetchedAt
         guard shouldRefresh(since: last) else { return }
-        Self.log.debug("claude, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
+        Self.log.notice("claude, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
         fetchLimits()
     }
 
     private func tickCodexUsage() {
         let last = codexSnapshot.fetchedAt
         guard shouldRefresh(since: last) else { return }
-        Self.log.debug("codex, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
+        Self.log.notice("codex, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
         fetchCodexUsage()
     }
 
