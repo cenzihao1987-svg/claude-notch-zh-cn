@@ -29,7 +29,7 @@ ALLOW_ADHOC=1 bash scripts/make-app.sh # 打包 dist/Claude Notch.app
 
 ## 目录约定
 
-- `spec/`：设计文档，命名 `YYYY-MM-DD-主题-design.md`。**不放 `docs/`**——上游 `.gitignore` 忽略 `docs/superpowers/`，且 `docs/` 在上游用于 GitHub Pages
+- `spec/`：设计文档 `YYYY-MM-DD-主题-design.md`，实施计划 `YYYY-MM-DD-主题-plan.md`。**都不放 `docs/`**——上游 `.gitignore` 忽略 `docs/superpowers/`，写进去会被静默丢弃；且 `docs/` 在上游用于 GitHub Pages
 - `Sources/ClaudeNotch/Core/`、`Model/`：数据层，**第一段不动**
 - `Sources/ClaudeNotch/UI/`、`System/`：展示与系统集成层，改造集中在此
 - 不新建目录、不移动既有文件
