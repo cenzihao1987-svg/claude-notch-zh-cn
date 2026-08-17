@@ -1,8 +1,12 @@
 import Foundation
+import OSLog
 import SwiftUI
 
 @MainActor @Observable
 final class AppModel {
+    /// 刷新节奏的可观测性。`log stream --predicate 'subsystem == "com.claudenotch.app"'`
+    private static let log = Logger(subsystem: "com.claudenotch.app", category: "refresh")
+
     private(set) var snapshot: UsageSnapshot = .empty
     private(set) var codexSnapshot: ProviderUsageSnapshot = .unavailable(.codex)
     private(set) var selectedProvider = UsageProviderID(
@@ -10,7 +14,13 @@ final class AppModel {
     ) ?? .claude
     /// Projects worked in today with their spend (from the logs), most-recently-active first.
     var sessionsToday: [ProjectUsage] { snapshot.projectsToday }
-    var isExpanded = false
+    /// 展开即刷新：折叠态可能刚好停在第 44 秒，展开就是为了看最新的，不该再等一个 tick。
+    var isExpanded = false {
+        didSet {
+            guard isExpanded, oldValue == false else { return }
+            refreshSelectedProvider()
+        }
+    }
     var isPaused = false
     var claudeRunning = false
     var avatarStyle: AvatarStyle = AvatarStyle.selected
@@ -239,11 +249,11 @@ final class AppModel {
         ticker = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
-        limitsTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.fetchLimits() }
+        limitsTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTick, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tickLimits() }
         }
-        codexTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.fetchCodexUsage() }
+        codexTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTick, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tickCodexUsage() }
         }
         Task.detached(priority: .utility) { [weak self] in
             let files = ClaudePaths.recentLogFiles(within: 2)   // recursive walk stays off-main
@@ -283,6 +293,13 @@ final class AppModel {
             fetchCodexUsage()
         }
     }
+    /// 立刻拉取当前 provider（不 force，不清缓存、不重读 Keychain）。
+    private func refreshSelectedProvider() {
+        switch selectedProvider {
+        case .claude: fetchLimits()
+        case .codex: fetchCodexUsage()
+        }
+    }
     func selectProvider(_ provider: UsageProviderID) {
         selectedProvider = provider
         UserDefaults.standard.set(provider.rawValue, forKey: "selectedProvider")
@@ -306,6 +323,32 @@ final class AppModel {
     func toggleHideInFullscreen() {
         hideInFullscreen.toggle()
         UserDefaults.standard.set(hideInFullscreen, forKey: "hideInFullscreen")
+    }
+
+    /// 展开态每个 tick 都刷；折叠态至少隔 collapsedInterval 秒才刷一次。
+    private static let refreshTick: TimeInterval = 15
+    private static let collapsedInterval: TimeInterval = 45
+
+    /// 从未成功取过数时返回 true——一直失败就该一直重试，不该被节流锁住。
+    /// 真正的失败节流在 ClaudeAPIService 的 900 秒 backoff 里。
+    private func shouldRefresh(since lastFetch: Date?) -> Bool {
+        if isExpanded { return true }
+        guard let lastFetch else { return true }
+        return Date().timeIntervalSince(lastFetch) >= Self.collapsedInterval
+    }
+
+    private func tickLimits() {
+        let last = limits?.fetchedAt
+        guard shouldRefresh(since: last) else { return }
+        Self.log.debug("claude, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
+        fetchLimits()
+    }
+
+    private func tickCodexUsage() {
+        let last = codexSnapshot.fetchedAt
+        guard shouldRefresh(since: last) else { return }
+        Self.log.debug("codex, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
+        fetchCodexUsage()
     }
 
     /// Fetch live claude.ai limits off-main (Keychain prompt appears on first run).
