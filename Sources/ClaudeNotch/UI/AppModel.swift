@@ -330,31 +330,50 @@ final class AppModel {
     }
 
     /// 展开态每个 tick 都刷；折叠态至少隔 collapsedInterval 秒才刷一次。
-    private static let refreshTick: TimeInterval = 15
-    private static let collapsedInterval: TimeInterval = 45
+    /// 2026-08-17 先用过 15/45，把账号打到了 api.anthropic.com 的 429，回退到这一档。
+    private static let refreshTick: TimeInterval = 30
+    private static let collapsedInterval: TimeInterval = 90
+    /// 连续失败后的退避上限，与 ClaudeAPIService 里的 900 秒 backoff 同量级。
+    private static let maxBackoff: TimeInterval = 900
 
-    /// 从未成功取过数时返回 true——一直失败就该一直重试，不该被节流锁住。
-    /// 真正的失败节流在 ClaudeAPIService 的 900 秒 backoff 里。
-    private func shouldRefresh(since lastFetch: Date?) -> Bool {
+    /// codex 侧的节流：读本地文件，不会被限流，失败重试无害，所以只看上次成功时刻。
+    /// claude 侧不能这么判——见下面 claudeAttemptedAt 的注释。
+    private func shouldRefreshCodex(since lastFetch: Date?) -> Bool {
         if isExpanded { return true }
         guard let lastFetch else { return true }
         return Date().timeIntervalSince(lastFetch) >= Self.collapsedInterval
     }
 
-    /// 两个 tick 都要先重复一遍 fetch 里的 guard：没有它，未选中的那条线每 15 秒都会打一条
+    /// claude 侧记「上次发起请求」的时刻，不是上次成功的时刻。
+    /// 用成功时刻做节流会死锁：取数一直失败 → fetchedAt 一直不变 → 每个 tick 都重试 →
+    /// 服务端 429 → 继续失败。2026-08-17 就是这样把账号打到限流的。
+    /// 这三个成员刻意不写 private——它们是那次事故的根因，要留给 RefreshBackoffTests 钉住。
+    var claudeAttemptedAt: Date?
+    var claudeFailures = 0
+    /// 上一次取数还没回来就别再发。取数可能**无限期**挂住——钥匙串授权框不点，
+    /// `SecItemCopyMatching` 就一直等；没有这个标记，挂住期间每 90 秒堆一个 Task，
+    /// 用户一点「允许」就会把积压的请求全部发出去，正好又撞限流。
+    private var claudeInFlight = false
+
+    /// 距上次发起至少要等多久。连续失败后翻倍退避，压到 maxBackoff 为止。
+    var claudeMinGap: TimeInterval {
+        guard claudeFailures == 0 else {
+            return min(Self.collapsedInterval * pow(2, Double(claudeFailures)), Self.maxBackoff)
+        }
+        return isExpanded ? Self.refreshTick : Self.collapsedInterval
+    }
+
+    /// tick 要先重复一遍 fetch 里的 guard：没有它，未选中的那条线每个 tick 都会打一条
     /// 「刷新了」，而 fetch 进去就被 guard 挡掉——日志记录了不存在的刷新，比没有日志更误导。
     private func tickLimits() {
         guard !isPaused, selectedProvider == .claude else { return }
-        let last = limits?.fetchedAt
-        guard shouldRefresh(since: last) else { return }
-        Self.log.notice("claude, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
-        fetchLimits()
+        fetchLimits()   // 节流与退避都在 fetchLimits 里，这里不再判断
     }
 
     private func tickCodexUsage() {
         guard !isPaused, selectedProvider == .codex else { return }
         let last = codexSnapshot.fetchedAt
-        guard shouldRefresh(since: last) else { return }
+        guard shouldRefreshCodex(since: last) else { return }
         Self.log.notice("codex, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
         fetchCodexUsage()
     }
@@ -362,10 +381,28 @@ final class AppModel {
     /// Fetch live claude.ai limits off-main (Keychain prompt appears on first run).
     /// Only replaces the last-known-good limits with a response that actually carries a
     /// session %, so a partial/failed read can never clobber correct data.
+    ///
+    /// 节流放在这里而不是 tickLimits 里，因为定时器只是三个入口之一：展开、前台跟随切换
+    /// 也都会立刻调它。切窗口比 tick 频繁得多，只拦定时器等于没拦。
+    /// `force` 只给菜单里的「立即刷新」用——用户主动要求就该穿透节流和退避。
     func fetchLimits(force: Bool = false) {
         guard !isPaused, selectedProvider == .claude else { return }
+        // in-flight 判断在 force 之前：force 该穿透的是节流策略，不是「物理上已有一个请求在飞」。
+        guard !claudeInFlight else { return }
+        let gap = claudeAttemptedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        guard force || gap >= claudeMinGap else { return }
+        claudeAttemptedAt = Date()
+        claudeInFlight = true
+        Self.log.notice("claude, \(gap.isFinite ? Int(gap) : -1, privacy: .public)s since last, \(self.claudeFailures, privacy: .public) fails")
         Task { [claudeAPI] in
-            if let l = await claudeAPI.fetch(force: force), l.sessionPct != nil { self.applyLimits(l) }
+            defer { self.claudeInFlight = false }
+            guard let l = await claudeAPI.fetch(force: force), l.sessionPct != nil else {
+                self.claudeFailures += 1
+                Self.log.notice("claude failed \(self.claudeFailures, privacy: .public)x, next in \(Int(self.claudeMinGap), privacy: .public)s")
+                return
+            }
+            self.applyLimits(l)
+            self.claudeFailures = 0
         }
     }
 
