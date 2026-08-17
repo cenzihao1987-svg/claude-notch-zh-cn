@@ -425,6 +425,7 @@ git commit -m "docs: 第一段改造已实施"
 
 不是 bug，是这次范围内接受的取舍，别当问题去修：
 
-- **未选中的那个 provider 的 Timer 每 15 秒空转一次**：`tickLimits` 会走到 `fetchLimits()`，被里面 `guard selectedProvider == .claude` 挡掉。开销是一次字典查询，不值得为它加第二层判断。
+- ~~**未选中的那个 provider 的 Timer 每 15 秒空转一次**：不值得为它加第二层判断。~~
+  **实跑后推翻了**：空转本身确实没开销，但它每 15 秒打一条「刷新了」的日志，而 fetch 一进去就被 `guard selectedProvider` 挡掉——日志记录了不存在的刷新。加日志之后这条取舍的前提就不成立了，两个 tick 都补上了 `guard !isPaused, selectedProvider == ...`。
 - **取数一直失败时会每 15 秒重试一次**：`shouldRefresh` 在 `fetchedAt` 为 nil 时返回 true 是刻意的——失败就该重试。真正的节流在 `ClaudeAPIService` 的 900 秒 backoff 里，那层不动。
 - **面板里的 token 数 / 花费 / 会话列表仍然不准**：本机日志记的是 DeepSeek 的消耗却按 Claude 计价，这次不修，属于二期「接入第三方模型」的范围。

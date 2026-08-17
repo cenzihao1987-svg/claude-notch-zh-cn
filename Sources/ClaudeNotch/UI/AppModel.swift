@@ -341,7 +341,10 @@ final class AppModel {
         return Date().timeIntervalSince(lastFetch) >= Self.collapsedInterval
     }
 
+    /// 两个 tick 都要先重复一遍 fetch 里的 guard：没有它，未选中的那条线每 15 秒都会打一条
+    /// 「刷新了」，而 fetch 进去就被 guard 挡掉——日志记录了不存在的刷新，比没有日志更误导。
     private func tickLimits() {
+        guard !isPaused, selectedProvider == .claude else { return }
         let last = limits?.fetchedAt
         guard shouldRefresh(since: last) else { return }
         Self.log.notice("claude, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
@@ -349,6 +352,7 @@ final class AppModel {
     }
 
     private func tickCodexUsage() {
+        guard !isPaused, selectedProvider == .codex else { return }
         let last = codexSnapshot.fetchedAt
         guard shouldRefresh(since: last) else { return }
         Self.log.notice("codex, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
