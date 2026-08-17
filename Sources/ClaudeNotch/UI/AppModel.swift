@@ -398,6 +398,10 @@ final class AppModel {
             defer { self.claudeInFlight = false }
             guard let l = await claudeAPI.fetch(force: force), l.sessionPct != nil else {
                 self.claudeFailures += 1
+                // 退避要从「失败」起算，不是从「发起」起算。请求本身可能耗掉比退避还长的时间
+                // （钥匙串授权框挂了 623 秒），那样退避窗口在请求回来前就被消耗光，
+                // 失败后会立刻再发一次。2026-08-17 实跑抓到的。
+                self.claudeAttemptedAt = Date()
                 Self.log.notice("claude failed \(self.claudeFailures, privacy: .public)x, next in \(Int(self.claudeMinGap), privacy: .public)s")
                 return
             }

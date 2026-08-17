@@ -235,7 +235,25 @@ UserDefaults.standard.set(provider.rawValue, forKey: "selectedProvider")
 
 第二行是死锁修复的直接证据：两个版本都处在「持续失败」状态，事故版 15 秒一次，新版 90 秒一次。第三行证明挂起期间不再积压。
 
-**仍有一个验证缺口**：`claudeFailures` 递增与 180/360/720/900 退避尚未实测——fetch 一直挂在钥匙串授权框上，从未返回，所以失败计数始终是 0。需要龟点掉授权框后再看日志（`claude failed Nx, next in Ns`）。
+### 失败退避的实测，以及它抓出的第二个 bug
+
+龟点掉授权框后拿到这段日志：
+
+```
+16:04:32.844  claude failed 1x, next in 180s
+16:04:36.365  claude, 623s since last, 1 fails      ← 只隔 3.5 秒
+16:04:36.707  claude failed 2x, next in 360s
+```
+
+失败计数与翻倍退避都对，但第二次发起**只隔了 3.5 秒就绕过了 180 秒退避**。原因：`claudeAttemptedAt` 记的是**发起**时刻（15:54:13），而这次请求挂在授权框上 623 秒才返回，退避窗口在请求还没回来时就被消耗光了。623 ≥ 180，于是判断通过。
+
+退避的语义是「失败后等多久再试」，基准必须是失败时刻。已在失败分支里补 `claudeAttemptedAt = Date()`。
+
+这个 bug 只在「单次请求耗时超过退避窗口」时暴露——正常 15 秒超时下退避照常生效，只少算 15 秒。是钥匙串无限期阻塞造出了这个极端条件。**纯推理不会发现它，实跑才会。**
+
+`623s since last` 这条同时旁证了 in-flight 有效：那 623 秒里定时器触发了 7 次，只有 1 次真的发起。
+
+**注意**：该修复提交后**没有重启 app**。限流期间重启会把 `claudeFailures` 归零、退避从 90 秒重新开始，等于增加请求、延长恢复；而当前进程已爬到 360 秒档位。dist 里跑的版本因此比 HEAD 少这一个修复，下次打包时自然带上。要立刻看数据可用菜单「立即刷新」——`force: true` 穿透节流与退避。
 
 `Tests/ClaudeNotchTests/RefreshBackoffTests.swift` 钉住了上述不变量。**注意：本机只装了 CommandLineTools，没有 Xcode.app，`swift-testing` 模块缺失，全套测试（含原有 5 个文件）都跑不起来**，该文件目前是未执行的资产。
 
