@@ -29,6 +29,7 @@
 - 不做 hover 展开（二期）
 - 不接入第三方模型（二期）
 - 不改动任何数据获取逻辑（`ClaudeAPIService`、`CodexUsageProvider` 保持原样）
+  - 已发生的例外：2026-08-17 为修「用量恒为 100%」在 `ClaudeAPIService` 纯新增了 Desktop OAuth 数据源，见 `spec/2026-08-17-claude用量恒为100-修复-design.md`。本段改造不再动这两个文件
 - 不改动 UI 布局与视觉
 
 ## 实测确认的前提
@@ -55,7 +56,17 @@
 
 ### 问题
 
-固定 60 秒。用户盯着看时嫌慢，但全天候压到 15 秒又是无谓地高频请求 `claude.ai/api/organizations/{org}/usage` —— 这是用 session cookie 调的非公开接口，高频轮询存在触发限流甚至风控的风险。
+固定 60 秒。用户盯着看时嫌慢，但全天候压到 15 秒又是无谓的高频请求。
+
+### 提速真正打到哪个接口（2026-08-17 修 100% bug 后更新）
+
+原先以为被提速的是 `claude.ai/api/organizations/{org}/usage`（session cookie 调的非公开接口）。核实后不是：
+
+- 本机 claude.ai 那条被 Cloudflare 挡回 403，`request()` 判为 `.rejected`，触发 **900 秒退避**。也就是无论 Timer 多快，claude.ai 都是每 15 分钟才撞一次，**提速影响不到它**
+- 实际出数的是修 bug 时新增的 Desktop OAuth 分支，打 `api.anthropic.com/api/oauth/usage`。**被提速的是它**
+- `ClaudeAPIService` 的 `sessionCache` / `desktopTokenCache` 缓存的是**凭据**不是 usage 结果，所以 Timer 提速等于请求提速，没有缓存兜底
+
+结论：提速的对象从「cookie 调的非公开接口」变成了「官方 OAuth 端点、用官方 token 调用」，风险画像比原设计时低，15/45 秒的分级维持不变。
 
 ### 方案
 
@@ -142,7 +153,7 @@ UserDefaults.standard.set(provider.rawValue, forKey: "selectedProvider")
 
 ## 风险
 
-- **接口频率**：展开态 15 秒是对非公开接口的提速。若观察到 429 或鉴权异常，退回 30 秒。这是可回退的单一常量。
+- **接口频率**：展开态 15 秒提速的是 `api.anthropic.com/api/oauth/usage`（官方端点 + 官方 token），不是 claude.ai 的 cookie 接口——后者被 403 退避锁在 15 分钟一次。若观察到 429 或鉴权异常，退回 30 秒。这是可回退的单一常量。
 - **激活通知频率**：`didActivateApplicationNotification` 在频繁切换应用时触发密集，靠「结果相同则返回」拦截，不会造成请求风暴。
 - **上游合并**：改动集中在两个文件的少量位置，上游 v0.3.2 后已近三周无提交，合并冲突风险低。
 
