@@ -3,7 +3,7 @@ import ServiceManagement
 
 enum AppInfo {
     static let version = "0.3.2"
-    static let tagline = "Claude & Codex"
+    static let tagline = "Claude 与 Codex"
 }
 
 /// Launch-at-login toggle (only effective when running as a bundled .app).
@@ -26,7 +26,7 @@ enum AvatarStyle: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .clawd:      "Clawd"
-        case .clawdWhite: "Clawd (mono)"
+        case .clawdWhite: "Clawd（单色）"
         case .spark:      "Spark"
         }
     }

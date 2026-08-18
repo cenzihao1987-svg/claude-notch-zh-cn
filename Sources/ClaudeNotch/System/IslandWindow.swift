@@ -1,6 +1,24 @@
 import AppKit
 import SwiftUI
 
+@MainActor @Observable
+final class IslandPresentationState {
+    var isExpanded = false {
+        didSet {
+            guard isExpanded != oldValue else { return }
+            onExpansionChange?()
+        }
+    }
+    var notchWidth: CGFloat
+    var topInset: CGFloat
+    @ObservationIgnored var onExpansionChange: (() -> Void)?
+
+    init(screen: NSScreen) {
+        notchWidth = screen.islandNotchWidth
+        topInset = screen.islandTopInset
+    }
+}
+
 /// Borderless floating panel that never becomes key (so it can't steal typing focus).
 final class NotchPanel: NSPanel {
     init(contentRect: NSRect) {
@@ -46,18 +64,43 @@ final class IslandWindow {
     private let panel: NotchPanel
     private let hosting: PassthroughHostingView<IslandRootView>
     private let model: AppModel
+    let presentation: IslandPresentationState
+    private(set) var screen: NSScreen
     private let panelHeight: CGFloat = 300
+    private var hoverExitAt: Date?
+    private var ignoreHoverExitUntil: Date?
+    private var requireTriggerExit = false
+    private let onExpansionChange: () -> Void
 
-    init(model: AppModel) {
+    init(model: AppModel, screen: NSScreen, onExpansionChange: @escaping () -> Void) {
         self.model = model
-        hosting = PassthroughHostingView(rootView: IslandRootView(model: model))
+        self.screen = screen
+        self.onExpansionChange = onExpansionChange
+        presentation = IslandPresentationState(screen: screen)
+        hosting = PassthroughHostingView(
+            rootView: IslandRootView(model: model, presentation: presentation)
+        )
         panel = NotchPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: panelHeight))
         panel.contentView = hosting
+        presentation.onExpansionChange = { [weak self] in self?.expansionChanged() }
+    }
+
+    var isExpanded: Bool { presentation.isExpanded }
+    var isVisible: Bool { panel.isVisible }
+
+    private func expansionChanged() {
+        if presentation.isExpanded {
+            ignoreHoverExitUntil = Date().addingTimeInterval(0.65)
+            requireTriggerExit = false
+        } else {
+            requireTriggerExit = true
+        }
+        updateInteractiveZone()
+        onExpansionChange()
     }
 
     /// Resting frame: the full-width strip flush to the top of the notched screen (or main).
-    private func restingFrame() -> NSRect? {
-        guard let screen = NSScreen.island else { return nil }
+    private func restingFrame() -> NSRect {
         return NSRect(x: screen.frame.minX, y: screen.frame.maxY - panelHeight,
                       width: screen.frame.width, height: panelHeight)
     }
@@ -68,8 +111,11 @@ final class IslandWindow {
     /// Retract-aware: `sync()` also runs this on Claude launch/quit and screen-parameter changes,
     /// which can happen mid-fullscreen. A retracted pill must stay retracted, or an invisible
     /// (alpha-0) panel would be parked back over the fullscreen app until the next show().
-    func relayout() {
-        guard var frame = restingFrame() else { return }
+    func relayout(on screen: NSScreen) {
+        self.screen = screen
+        presentation.notchWidth = screen.islandNotchWidth
+        presentation.topInset = screen.islandTopInset
+        var frame = restingFrame()
         if isRetracted { frame.origin.y += slideDistance }
         panel.setFrame(frame, display: true)
         hosting.frame = NSRect(origin: .zero, size: frame.size)
@@ -79,13 +125,63 @@ final class IslandWindow {
     /// Resize only the invisible click-catcher to the pill's current footprint — cheap, no
     /// window resize, so no animation jump.
     func updateInteractiveZone() {
-        let closedH = max(model.topInset, 30)
+        let closedH = max(presentation.topInset, 30)
         let dropH = model.expandedDropHeight
-        let zoneW = model.notchWidth + 56 * 2 + 24 + 24    // wing+gap+wing + edge insets + margin
-        let zoneH = (model.isExpanded ? closedH + dropH + 8 : closedH + 6)
+        let closedZoneW = presentation.notchWidth + 56 * 2 + 24 + 24
+        let zoneW = isExpanded ? model.expandedIslandWidth : closedZoneW
+        let zoneH = (isExpanded ? closedH + dropH + 8 : closedH + 6)
         let w = hosting.bounds.width
         let h = hosting.bounds.height
         hosting.interactiveRect = CGRect(x: (w - zoneW) / 2, y: h - zoneH, width: zoneW, height: zoneH)
+    }
+
+    /// Poll the global pointer against an exact activation strip. This avoids SwiftUI retaining a
+    /// stale tracking area after the island animates between its collapsed and expanded heights.
+    /// Activation is always the system notch/titlebar height + 10 px; the expanded card itself is
+    /// only a retention area, so it stays usable without becoming a giant activation hotspot.
+    func updateHoverExpansion() {
+        guard !isRetracted, panel.isVisible else { return }
+        let closedH = max(presentation.topInset, 30)
+        let closedZoneW = presentation.notchWidth + 56 * 2 + 24 + 24
+        let panelWidth = panel.contentView?.bounds.width ?? panel.frame.width
+        let mouse = panel.mouseLocationOutsideOfEventStream
+
+        if !isExpanded {
+            hoverExitAt = nil
+            let trigger = CGRect(
+                x: (panelWidth - closedZoneW) / 2,
+                y: panelHeight - closedH - 10,
+                width: closedZoneW,
+                height: closedH + 10
+            )
+            if requireTriggerExit {
+                if !trigger.contains(mouse) { requireTriggerExit = false }
+                return
+            }
+            if trigger.contains(mouse) { presentation.isExpanded = true }
+            return
+        }
+
+        if let deadline = ignoreHoverExitUntil, Date() < deadline { return }
+        ignoreHoverExitUntil = nil
+
+        let retention = CGRect(
+            x: (panelWidth - model.expandedIslandWidth) / 2,
+            y: panelHeight - closedH - model.expandedDropHeight - 8,
+            width: model.expandedIslandWidth,
+            height: closedH + model.expandedDropHeight + 8
+        )
+        if retention.contains(mouse) {
+            hoverExitAt = nil
+        } else if let deadline = hoverExitAt {
+            if Date() >= deadline {
+                requireTriggerExit = true
+                presentation.isExpanded = false
+                hoverExitAt = nil
+            }
+        } else {
+            hoverExitAt = Date().addingTimeInterval(0.22)
+        }
     }
 
     /// How far the pill travels up (into the notch) when hiding for fullscreen. Enough to clear the
@@ -101,7 +197,7 @@ final class IslandWindow {
     func show() {
         isRetracted = false
         hosting.interactionEnabled = true                      // interactive again
-        guard let rest = restingFrame() else { panel.orderFrontRegardless(); return }
+        let rest = restingFrame()
         if !panel.isVisible {                                  // first appearance: start retracted
             var start = rest; start.origin.y += slideDistance
             panel.setFrame(start, display: false)
@@ -126,10 +222,10 @@ final class IslandWindow {
     /// something repositions it on-screen. Window-server click-through of transparent pixels stays
     /// untouched — `ignoresMouseEvents` must never be set explicitly (see the note on the view).
     func hide() {
-        model.isExpanded = false                               // never slide away mid-expand
+        presentation.isExpanded = false                        // never slide away mid-expand
         isRetracted = true
         hosting.interactionEnabled = false                     // a hidden pill must never eat clicks
-        guard let rest = restingFrame() else { return }
+        let rest = restingFrame()
         var end = rest; end.origin.y += slideDistance
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.28
@@ -137,5 +233,12 @@ final class IslandWindow {
             panel.animator().setFrame(end, display: true)
             panel.animator().alphaValue = 0
         }
+    }
+
+    func collapse() { presentation.isExpanded = false }
+
+    func close() {
+        panel.orderOut(nil)
+        panel.close()
     }
 }

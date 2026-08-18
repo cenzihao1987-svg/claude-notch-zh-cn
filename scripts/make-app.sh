@@ -50,18 +50,37 @@ if [ -z "${SIGN_ID:-}" ]; then
   fi
 fi
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+EMBED_WIDGETKIT="${EMBED_WIDGETKIT:-0}"
+if [ "$EMBED_WIDGETKIT" = "1" ] && [ "$SIGN_ID" = "-" ]; then
+  echo "✗ WidgetKit extensions require an Apple signing identity; use the built-in desktop widget for ad-hoc builds."
+  exit 1
+fi
 
 echo "▸ Release build…"
 swift build -c release --package-path "$ROOT"
 BIN="$ROOT/.build/release/ClaudeNotch"
+WIDGET_BIN="$ROOT/.build/release/CodexQuotaWidget"
 [ -x "$BIN" ] || { echo "✗ binary not found at $BIN"; exit 1; }
+if [ "$EMBED_WIDGETKIT" = "1" ]; then
+  [ -x "$WIDGET_BIN" ] || { echo "✗ widget binary not found at $WIDGET_BIN"; exit 1; }
+fi
 
 echo "▸ Assembling $APP_NAME.app…"
 rm -rf "$DIST"
+WIDGET_APP="$APPDIR/Contents/PlugIns/CodexQuotaWidget.appex"
 mkdir -p "$APPDIR/Contents/MacOS" "$APPDIR/Contents/Resources" "$APPDIR/Contents/Frameworks"
 cp "$BIN" "$APPDIR/Contents/MacOS/ClaudeNotch"
 cp "$ROOT/Resources/Info.plist" "$APPDIR/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APPDIR/Contents/Resources/AppIcon.icns"
+cp "$ROOT/Sources/CodexWidgetShared/Resources/codex-widget-icon.png" \
+  "$APPDIR/Contents/Resources/codex-widget-icon.png"
+if [ "$EMBED_WIDGETKIT" = "1" ]; then
+  mkdir -p "$WIDGET_APP/Contents/MacOS" "$WIDGET_APP/Contents/Resources"
+  cp "$WIDGET_BIN" "$WIDGET_APP/Contents/MacOS/CodexQuotaWidget"
+  cp "$ROOT/Resources/CodexQuotaWidget-Info.plist" "$WIDGET_APP/Contents/Info.plist"
+  cp "$ROOT/Sources/CodexWidgetShared/Resources/codex-widget-icon.png" \
+    "$WIDGET_APP/Contents/Resources/codex-widget-icon.png"
+fi
 
 # Preserve SwiftPM's resource bundle inside the conventional app resources directory.
 # Resolved via the same .build/release products path as BIN above — SwiftPM keeps that as a
@@ -89,7 +108,14 @@ else
   codesign -f -o runtime --timestamp -s "$SIGN_ID" "$FW/Versions/B/Autoupdate"
   codesign -f -o runtime --timestamp -s "$SIGN_ID" "$FW/Versions/B/Updater.app"
   codesign -f -o runtime --timestamp -s "$SIGN_ID" "$FW"
-  codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APPDIR"
+  if [ "$EMBED_WIDGETKIT" = "1" ]; then
+    codesign --force --options runtime --timestamp --sign "$SIGN_ID" \
+      --entitlements "$ROOT/Resources/CodexQuotaWidget.entitlements" "$WIDGET_APP"
+    codesign --force --options runtime --timestamp --sign "$SIGN_ID" \
+      --entitlements "$ROOT/Resources/ClaudeNotch.entitlements" "$APPDIR"
+  else
+    codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APPDIR"
+  fi
   codesign --verify --strict --verbose=2 "$APPDIR"
 fi
 

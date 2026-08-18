@@ -1,6 +1,8 @@
+import CodexWidgetShared
 import Foundation
 import OSLog
 import SwiftUI
+import WidgetKit
 
 @MainActor @Observable
 final class AppModel {
@@ -12,6 +14,7 @@ final class AppModel {
 
     private(set) var snapshot: UsageSnapshot = .empty
     private(set) var codexSnapshot: ProviderUsageSnapshot = .unavailable(.codex)
+    private(set) var codexWidgetSnapshot = CodexWidgetSnapshotStore.load()
     private(set) var selectedProvider = UsageProviderID(
         rawValue: UserDefaults.standard.string(forKey: "selectedProvider") ?? ""
     ) ?? .claude
@@ -26,22 +29,29 @@ final class AppModel {
     }
     var isPaused = false
     var claudeRunning = false
+    var codexRunning = false
+    private(set) var activityStates: [UsageProviderID: AgentActivityState] = [:]
     var avatarStyle: AvatarStyle = AvatarStyle.selected
     /// Whether the icon (Clawd / Spark) animates. Persisted; default on.
     var animateIcon: Bool = (UserDefaults.standard.object(forKey: "animateIcon") as? Bool) ?? true
     /// Hide the island while a fullscreen app is frontmost (menu bar hidden). Persisted; default off.
     var hideInFullscreen: Bool = UserDefaults.standard.bool(forKey: "hideInFullscreen")
-    /// Notch geometry of the screen the island lives on (updated on display changes).
-    var notchWidth: CGFloat = 190
-    var topInset: CGFloat = 32
-
+    /// Keep the Codex quota card on the desktop. Persisted; default on.
+    var showDesktopWidget: Bool =
+        (UserDefaults.standard.object(forKey: "showDesktopWidget") as? Bool) ?? true
     /// Live account limits from claude.ai (authoritative, matches Claude Desktop).
     private(set) var limits: ClaudeLimits?
     /// Context window remaining, 0…1, from the terminal statusline feed (nil if unknown).
     private(set) var contextRemaining: Double?
     /// Friendly plan name, e.g. "Claude Max 5x" (from ~/.claude.json).
     private(set) var planName: String?
+    /// Exact Pro/Max capability from Claude Desktop's cached official organization profile.
+    private(set) var claudeSubscriptionTier: ClaudeSubscriptionTier?
     private var statuslineUsage: Double?
+    private var statuslineWeeklyUsage: Double?
+    private var statuslineSessionReset: Date?
+    private var statuslineWeeklyReset: Date?
+    private var statuslineFetchedAt: Date?
     private var weeklyResetFromConfig: Date?
     /// Recent (time, session %) samples for the burn-rate ETA.
     private var pctHistory: [(t: Date, pct: Double)] = []
@@ -55,13 +65,18 @@ final class AppModel {
     private let store = UsageStore()
     private let loader = LogLoader()
     private let claudeAPI = ClaudeAPIService()
+    private let desktopUsageCache = ClaudeDesktopUsageCache()
     private let codexProvider = CodexUsageProvider()
     private let lifetimeScanner = LifetimeScanner()
+    private let activityReader = AgentActivityReader()
     private var watcher: LogWatcher?
     private var ticker: Timer?
     private var limitsTimer: Timer?
     private var codexTimer: Timer?
+    private var codexWidgetTimer: Timer?
     private var lifetimeTimer: Timer?
+    private var activityTimer: Timer?
+    private var activityReadInFlight = false
     /// mtime of each log file the last time we parsed it, so the periodic sweep re-reads only
     /// files that actually grew and skips the rest.
     private var parsedMTimes: [URL: Date] = [:]
@@ -71,22 +86,22 @@ final class AppModel {
     private var titlesBySession: [String: String] = [:]
     private var lastReingest = Date.distantPast
 
-    // MARK: display values (prefer live limits, then terminal feed, then estimate)
+    // MARK: display values (official account sources only)
 
     private var claudeSessionUsage: Double? {
-        limits?.sessionPct ?? statuslineUsage ?? (snapshot.isEmpty ? nil : snapshot.blockUsageEstimate)
+        limits?.sessionPct ?? statuslineUsage
     }
     var sessionUsage: Double? { activeProviderSnapshot.primaryUsage }
-    var weeklyUsage: Double? { limits?.weeklyPct }
+    var weeklyUsage: Double? { limits?.weeklyPct ?? statuslineWeeklyUsage }
     var fableUsage: Double? { limits?.fablePct }          // Fable's own weekly limit (if provided)
     var fableResetsAt: Date? { limits?.fableResetsAt }
-    var sessionResetsAt: Date? { limits?.sessionResetsAt }
-    var weeklyResetsAt: Date? { limits?.weeklyResetsAt ?? weeklyResetFromConfig }
-    var lastFetch: Date? { limits?.fetchedAt }
+    var sessionResetsAt: Date? { limits?.sessionResetsAt ?? statuslineSessionReset }
+    var weeklyResetsAt: Date? { limits?.weeklyResetsAt ?? statuslineWeeklyReset ?? weeklyResetFromConfig }
+    var lastFetch: Date? { limits?.fetchedAt ?? statuslineFetchedAt }
     private var claudeUsageSource: String {
         if let l = limits { return l.source ?? "claude.ai" }
         if statuslineUsage != nil { return "terminal" }
-        return "estimate"
+        return "unavailable"
     }
     /// True when live limits exist but haven't refreshed recently (fetches failing) — the UI
     /// dims the numbers so a frozen value is never shown as if it were current.
@@ -126,16 +141,6 @@ final class AppModel {
     /// walking and stands still rather than sprinting at max speed.
     var isAtLimit: Bool { iconUrgency >= 0.999 }
 
-    /// Projected end-of-day cost if today keeps up its average spend rate so far. nil before any
-    /// spend, or too early in the day for the extrapolation to mean anything.
-    var projectedCostToday: Double? {
-        let cost = snapshot.costToday
-        guard cost > 0 else { return nil }
-        let dayFraction = Date().timeIntervalSince(Calendar.current.startOfDay(for: Date())) / 86_400
-        guard dayFraction > 0.1 else { return nil }   // before ~2:24am it's just noise
-        return cost / dayFraction
-    }
-
     /// Credits tile: the purchased usage-credit balance when known (what claude.ai settings calls
     /// "Current balance"), else the monthly spend, else "none".
     private var creditsValue: String {
@@ -143,21 +148,21 @@ final class AppModel {
             return Fmt.money(minor: minor, currency: currency)
         }
         if let spend = monthlySpendLabel { return spend }
-        return limits?.creditsPct.map { Fmt.pct($0) + " used" } ?? "none"
+        return limits?.creditsPct.map { "已用 " + Fmt.pct($0) } ?? "无"
     }
     /// Subline under the balance: this month's extra-usage spend in absolute money against the
     /// monthly cap. A bare percent read as "percent of my credits" — but it tracks the CAP, so an
     /// emptied balance could sit at "90% used" and look like headroom that isn't there.
     private var creditsSubtitle: String? {
         guard limits?.creditsBalanceMinor != nil else { return nil }
-        return monthlySpendLabel.map { $0 + "/mo" }
-            ?? limits?.creditsPct.map { Fmt.pct($0) + " of cap" }
+        return monthlySpendLabel.map { $0 + " / 月" }
+            ?? limits?.creditsPct.map { "已用上限的 " + Fmt.pct($0) }
     }
     /// "€45.21 of €50.00" from the spend block, when the API provides the amounts.
     private var monthlySpendLabel: String? {
         guard let used = limits?.spendUsedMinor, let cap = limits?.spendCapMinor, cap > 0,
               let currency = limits?.spendCurrency else { return nil }
-        return "\(Fmt.money(minor: used, currency: currency)) of \(Fmt.money(minor: cap, currency: currency))"
+        return "已用 \(Fmt.money(minor: used, currency: currency)) / 上限 \(Fmt.money(minor: cap, currency: currency))"
     }
 
     var activeProviderSnapshot: ProviderUsageSnapshot {
@@ -168,47 +173,34 @@ final class AppModel {
     }
 
     private var claudeProviderSnapshot: ProviderUsageSnapshot {
+        let isPro = claudeSubscriptionTier == .pro
+        let isMax = claudeSubscriptionTier == .max
         var usageLimits = [
-            UsageLimitMetric(id: "claude-session", label: "5-Hour",
+            UsageLimitMetric(id: "claude-session", label: "5 小时",
                              usedFraction: claudeSessionUsage, resetsAt: sessionResetsAt),
-            UsageLimitMetric(id: "claude-weekly", label: "7-Day",
+            UsageLimitMetric(id: "claude-weekly", label: "7 天",
                              usedFraction: weeklyUsage, resetsAt: weeklyResetsAt),
         ]
-        if fableUsage != nil {
+        if !isPro, fableUsage != nil || isMax {
             usageLimits.append(UsageLimitMetric(id: "claude-fable", label: "Fable",
                                                 usedFraction: fableUsage, resetsAt: fableResetsAt))
         }
 
-        var stats = [
-            UsageStatMetric(id: "cost-today", label: "cost today · local",
-                            value: snapshot.isEmpty ? "—" : Fmt.usd(snapshot.costToday),
-                            subtitle: projectedCostToday.map { "~\(Fmt.usd($0)) by tonight" }),
-            UsageStatMetric(id: "credits", label: "credits",
-                            value: creditsValue, subtitle: creditsSubtitle),
-            // All-time lives here now; the detail page belongs to the week chart + sessions,
-            // and "tokens today" is redundant with the chart's highlighted today bar.
-            UsageStatMetric(id: "all-time", label: "all-time · local",
-                            value: lifetime.tokens == 0 ? "—" : Fmt.usd(lifetime.cost),
-                            subtitle: lifetime.tokens == 0 ? nil : Fmt.tokens(lifetime.tokens)),
-        ]
-        if fableUsage == nil {
-            stats.insert(
-                UsageStatMetric(id: "fable-tokens", label: "Fable",
-                                value: lifetime.fableTokens == 0 ? "—" : Fmt.tokens(lifetime.fableTokens),
-                                subtitle: "all-time"),
-                at: 0
-            )
+        var stats: [UsageStatMetric] = []
+        if !isPro {
+            stats.append(UsageStatMetric(id: "credits", label: "可用额度",
+                                         value: creditsValue, subtitle: creditsSubtitle))
         }
 
         var currentSessions = sessionsToday.map {
-            UsageSessionMetric(id: $0.id, name: $0.name, cost: $0.cost,
+            UsageSessionMetric(id: $0.id, name: $0.name, cost: nil,
                                tokens: $0.tokens, last: $0.last)
         }
         if currentSessions.isEmpty, !snapshot.isEmpty {
             currentSessions.append(UsageSessionMetric(
                 id: "claude-active-session",
-                name: "this session",
-                cost: snapshot.activeSessionCost,
+                name: "当前会话",
+                cost: nil,
                 tokens: snapshot.activeSessionTokens,
                 last: Date()
             ))
@@ -218,23 +210,23 @@ final class AppModel {
             provider: .claude,
             limits: usageLimits,
             stats: stats,
-            todayCost: snapshot.isEmpty ? nil : snapshot.costToday,
             todayTokens: snapshot.isEmpty ? nil : snapshot.tokensToday,
-            lifetimeCost: lifetime.tokens == 0 ? nil : lifetime.cost,
             lifetimeTokens: lifetime.tokens == 0 ? nil : lifetime.tokens,
-            dailySeries: claudeDailySeries,
-            chartTitle: "last 7 days · local",
+            dailySeries: claudeDailySeries.map {
+                DailyUsagePoint(date: $0.date, tokens: $0.tokens)
+            },
+            chartTitle: "近 7 天 · 本地",
             chartOnDetailPage: true,
-            sessionsTitle: "active sessions",
+            sessionsTitle: "活跃会话",
             sessions: currentSessions,
-            alternateSessionsTitle: "all-time · top projects",
+            alternateSessionsTitle: "累计 · 高频项目",
             alternateSessions: lifetime.projects.map {
-                UsageSessionMetric(id: $0.id, name: $0.name, cost: $0.cost,
+                UsageSessionMetric(id: $0.id, name: $0.name, cost: nil,
                                    tokens: $0.tokens, last: $0.last)
             },
-            planName: planName,
+            planName: claudeSubscriptionTier == .pro ? "Claude Pro" : planName,
             source: claudeUsageSource,
-            fetchedAt: limits?.fetchedAt
+            fetchedAt: limits?.fetchedAt ?? statuslineFetchedAt
         )
     }
 
@@ -252,21 +244,48 @@ final class AppModel {
         ticker = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
+        refreshActivityStates()
+        activityTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshActivityStates() }
+        }
         limitsTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTick, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tickLimits() }
         }
         codexTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTick, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tickCodexUsage() }
         }
+        codexWidgetTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.selectedProvider != .codex else { return }
+                self.fetchCodexUsage(includeWhenInactive: true)
+            }
+        }
+        codexWidgetTimer?.tolerance = 60
         Task.detached(priority: .utility) { [weak self] in
             let files = ClaudePaths.recentLogFiles(within: 2)   // recursive walk stays off-main
             await self?.ingest(files)
         }
         fetchLimits()
-        fetchCodexUsage()
+        fetchCodexUsage(includeWhenInactive: true)
         scanLifetime()
         lifetimeTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.scanLifetime() }
+        }
+    }
+
+    func activityState(for provider: UsageProviderID) -> AgentActivityState {
+        guard !isPaused else { return .idle }
+        let running = provider == .claude ? claudeRunning : codexRunning
+        return running ? (activityStates[provider] ?? .idle) : .idle
+    }
+
+    private func refreshActivityStates() {
+        guard !activityReadInFlight else { return }
+        activityReadInFlight = true
+        Task { [activityReader] in
+            let states = await activityReader.read()
+            self.activityStates = states
+            self.activityReadInFlight = false
         }
     }
 
@@ -283,7 +302,7 @@ final class AppModel {
     func refreshNow() {
         refresh()
         switch selectedProvider {
-        case .claude: fetchLimits(force: true)   // re-read the session, e.g. after a re-login
+        case .claude: fetchLimits(force: true)   // fresh Desktop cache first; network if unavailable/stale
         case .codex: fetchCodexUsage()
         }
     }
@@ -327,6 +346,10 @@ final class AppModel {
     func toggleHideInFullscreen() {
         hideInFullscreen.toggle()
         UserDefaults.standard.set(hideInFullscreen, forKey: "hideInFullscreen")
+    }
+    func toggleDesktopWidget() {
+        showDesktopWidget.toggle()
+        UserDefaults.standard.set(showDesktopWidget, forKey: "showDesktopWidget")
     }
 
     /// 展开态每个 tick 都刷；折叠态至少隔 collapsedInterval 秒才刷一次。
@@ -384,18 +407,39 @@ final class AppModel {
     ///
     /// 节流放在这里而不是 tickLimits 里，因为定时器只是三个入口之一：展开、前台跟随切换
     /// 也都会立刻调它。切窗口比 tick 频繁得多，只拦定时器等于没拦。
-    /// `force` 只给菜单里的「立即刷新」用——用户主动要求就该穿透节流和退避。
+    /// `force` 只给菜单里的「立即刷新」用：新鲜 Desktop 缓存仍优先；只有缓存不可用或
+    /// 过期时，用户主动刷新才穿透网络节流与退避。
     func fetchLimits(force: Bool = false) {
         guard !isPaused, selectedProvider == .claude else { return }
-        // in-flight 判断在 force 之前：force 该穿透的是节流策略，不是「物理上已有一个请求在飞」。
+        // 本地缓存读取也共用 in-flight：避免 30 秒 tick、展开与前台切换同时扫描同一个文件。
         guard !claudeInFlight else { return }
-        let gap = claudeAttemptedAt.map { Date().timeIntervalSince($0) } ?? .infinity
-        guard force || gap >= claudeMinGap else { return }
-        claudeAttemptedAt = Date()
         claudeInFlight = true
-        Self.log.notice("claude, \(gap.isFinite ? Int(gap) : -1, privacy: .public)s since last, \(self.claudeFailures, privacy: .public) fails")
-        Task { [claudeAPI] in
+        Task { [claudeAPI, desktopUsageCache] in
             defer { self.claudeInFlight = false }
+
+            if let tier = await desktopUsageCache.subscriptionTier() {
+                self.claudeSubscriptionTier = tier
+            }
+
+            // Claude Desktop 已经请求并缓存的官方响应优先。5 分钟内视为新鲜：不再重复请求
+            // 同一个接口，也不触碰 token/Cookie/Keychain。仍在当前额度周期内的旧值继续显示并
+            // 标为 stale；自动刷新等待 Desktop 写入新缓存，只有用户手动刷新才穿透到网络源。
+            if let cached = await desktopUsageCache.latest() {
+                if let reset = cached.sessionResetsAt, reset <= Date() {
+                    self.discardExpiredDesktopCachedUsage()
+                } else {
+                    self.applyDesktopCachedUsage(cached)
+                    if !force || cached.isFresh(after: 300) {
+                        self.claudeFailures = 0
+                        return
+                    }
+                }
+            }
+
+            let gap = self.claudeAttemptedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+            guard force || gap >= self.claudeMinGap else { return }
+            self.claudeAttemptedAt = Date()
+            Self.log.notice("claude network, \(gap.isFinite ? Int(gap) : -1, privacy: .public)s since last, \(self.claudeFailures, privacy: .public) fails")
             guard let l = await claudeAPI.fetch(force: force), l.sessionPct != nil else {
                 self.claudeFailures += 1
                 // 退避要从「失败」起算，不是从「发起」起算。请求本身可能耗掉比退避还长的时间
@@ -410,10 +454,58 @@ final class AppModel {
         }
     }
 
-    func fetchCodexUsage() {
-        guard !isPaused, selectedProvider == .codex else { return }
+    private func applyDesktopCachedUsage(_ cached: ClaudeDesktopCachedUsage) {
+        if let current = limits?.fetchedAt, current >= cached.fetchedAt { return }
+        let previous = limits
+        applyLimits(ClaudeLimits(
+            sessionPct: cached.sessionPct,
+            sessionResetsAt: cached.sessionResetsAt,
+            weeklyPct: cached.weeklyPct,
+            weeklyResetsAt: cached.weeklyResetsAt,
+            creditsPct: previous?.creditsPct,
+            creditsBalanceMinor: previous?.creditsBalanceMinor,
+            creditsCurrency: previous?.creditsCurrency,
+            spendUsedMinor: previous?.spendUsedMinor,
+            spendCapMinor: previous?.spendCapMinor,
+            spendCurrency: previous?.spendCurrency,
+            fablePct: previous?.fablePct,
+            fableResetsAt: previous?.fableResetsAt,
+            source: "Claude Desktop cache",
+            fetchedAt: cached.fetchedAt
+        ))
+    }
+
+    private func discardExpiredDesktopCachedUsage() {
+        guard limits?.source == "Claude Desktop cache" else { return }
+        limits = nil
+        pctHistory.removeAll()
+    }
+
+    func fetchCodexUsage(includeWhenInactive: Bool = false) {
+        guard !isPaused, includeWhenInactive || selectedProvider == .codex else { return }
         Task { [codexProvider] in
-            self.codexSnapshot = await codexProvider.fetch()
+            let snapshot = await codexProvider.fetch()
+            self.codexSnapshot = snapshot
+            self.updateCodexWidget(from: snapshot)
+        }
+    }
+
+    private func updateCodexWidget(from snapshot: ProviderUsageSnapshot) {
+        guard let weekly = snapshot.limits.first(where: {
+            $0.label.split(separator: "·").last?
+                .trimmingCharacters(in: .whitespacesAndNewlines) == "7-Day"
+        }), let usedFraction = weekly.usedFraction else { return }
+        let widgetSnapshot = CodexWidgetSnapshot(
+            remainingFraction: 1 - usedFraction,
+            resetsAt: weekly.resetsAt,
+            fetchedAt: snapshot.fetchedAt ?? Date()
+        )
+        codexWidgetSnapshot = widgetSnapshot
+        CodexWidgetSnapshotStore.save(widgetSnapshot)
+        let systemWidget = Bundle.main.builtInPlugInsURL?
+            .appendingPathComponent("CodexQuotaWidget.appex")
+        if let systemWidget, FileManager.default.fileExists(atPath: systemWidget.path) {
+            WidgetCenter.shared.reloadTimelines(ofKind: "CodexQuotaWidget")
         }
     }
 
@@ -505,16 +597,32 @@ final class AppModel {
         }
     }
 
-    /// Expanded drop-down height — fixed, since the expanded view is a fixed-size two-page pager.
+    /// Expanded geometry is shared by the SwiftUI shape and its AppKit interaction zone.
     /// Read by both the view and the window's click-zone.
-    var expandedDropHeight: CGFloat { 234 }
+    var expandedDropHeight: CGFloat { 260 }
+    var expandedIslandWidth: CGFloat { 720 }
 
-    /// Terminal statusline feed (fallback source for session % and context).
+    /// Terminal statusline feed. Claude Code 2.1.80+ officially exposes account rate limits in
+    /// `rate_limits`; the legacy flat fields remain a compatibility fallback.
     private func readStatusFeed() {
         guard let data = try? Data(contentsOf: usageFileURL),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-        if let rem = (obj["rate_remaining"] as? NSNumber)?.doubleValue {
+        if let rateLimits = obj["rate_limits"] as? [String: Any] {
+            func readWindow(_ key: String) -> (Double?, Date?) {
+                guard let window = rateLimits[key] as? [String: Any] else { return (nil, nil) }
+                let rawPct: Double? = (window["used_percentage"] as? NSNumber)?.doubleValue
+                let pct = rawPct.map { min(1, max(0, $0 / 100)) }
+                let reset = (window["resets_at"] as? NSNumber).map {
+                    Date(timeIntervalSince1970: $0.doubleValue)
+                }
+                return (pct, reset)
+            }
+            (statuslineUsage, statuslineSessionReset) = readWindow("five_hour")
+            (statuslineWeeklyUsage, statuslineWeeklyReset) = readWindow("seven_day")
+            statuslineFetchedAt = Self.mtime(usageFileURL)
+        } else if let rem = (obj["rate_remaining"] as? NSNumber)?.doubleValue {
             statuslineUsage = max(0, min(1, (100 - rem) / 100))
+            statuslineFetchedAt = Self.mtime(usageFileURL)
         }
         if let ctx = (obj["ctx_remaining"] as? NSNumber)?.doubleValue {
             contextRemaining = max(0, min(1, ctx / 100))

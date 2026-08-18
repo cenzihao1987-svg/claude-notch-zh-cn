@@ -4,10 +4,11 @@ import AppKit
 /// Top-anchors the pill inside the fixed full-width window, horizontally centered on the notch.
 struct IslandRootView: View {
     let model: AppModel
+    let presentation: IslandPresentationState
 
     var body: some View {
         VStack(spacing: 0) {
-            IslandView(model: model, notchWidth: model.notchWidth, topInset: model.topInset)
+            IslandView(model: model, presentation: presentation)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -15,32 +16,32 @@ struct IslandRootView: View {
 }
 
 /// The notch-fused black island. Closed: Clawd + session-% flanking the camera. Expanded: it
-/// grows taller (never wider), dropping a tile grid below the notch. The NotchShape's radii
+/// grows into a wider single-page dashboard below the notch. The NotchShape's radii
 /// animate, so it morphs like the notch itself growing.
 struct IslandView: View {
     let model: AppModel
-    let notchWidth: CGFloat
-    let topInset: CGFloat
+    let presentation: IslandPresentationState
 
     /// 5-Hour tile: false = show burn-rate ETA when available, true = always show reset.
     @State private var prefReset = false
-    /// Expanded view is a two-page pager: 0 = limits, 1 = local detail. dragX tracks a live swipe.
-    @State private var page = 0
-    @State private var dragX: CGFloat = 0
     /// The sessions block flips between today's active sessions and all-time top projects on tap.
     @State private var showAllTime = false
 
     private let wing: CGFloat = 56
     private let iconSize: CGFloat = 18
-    private let edgeInset: CGFloat = 12   // keeps content off the pill's flared edges
+    private let edgeInset: CGFloat = 12
+    private let expandedInset: CGFloat = 24
+    private let expandedUsageInset: CGFloat = 32
     private var dropHeight: CGFloat { model.expandedDropHeight }
 
-    private var expanded: Bool { model.isExpanded }
-    private var closedH: CGFloat { max(topInset, 30) }
-    private var gap: CGFloat { notchWidth }
+    private var expanded: Bool { presentation.isExpanded }
+    private var closedH: CGFloat { max(presentation.topInset, 30) }
+    private var gap: CGFloat { presentation.notchWidth }
     private var closedWidth: CGFloat { wing + gap + wing + edgeInset * 2 }
+    private var islandWidth: CGFloat { expanded ? model.expandedIslandWidth : closedWidth }
     private var provider: ProviderUsageSnapshot { model.activeProviderSnapshot }
     private var used: Double { provider.primaryUsage ?? 0 }
+    private var displayedUsage: Double { displayFraction(provider.primaryUsage) ?? 0 }
     /// Loaded once — this is read on every render of the closed row, and hitting the disk per
     /// frame during animations would be pure waste. MainActor because NSImage isn't Sendable.
     @MainActor private static let codexIcon: NSImage? = {
@@ -65,13 +66,13 @@ struct IslandView: View {
         ZStack(alignment: .top) {
             shape.fill(Color.black)
             VStack(spacing: 0) {
-                notchRow.frame(width: closedWidth, height: closedH)
+                notchRow.frame(width: islandWidth, height: closedH)
                 dropDown
-                    .frame(width: closedWidth, height: dropHeight, alignment: .top)
+                    .frame(width: islandWidth, height: dropHeight, alignment: .top)
                     .opacity(expanded ? 1 : 0)
             }
         }
-        .frame(width: closedWidth,
+        .frame(width: islandWidth,
                height: expanded ? closedH + dropHeight : closedH,
                alignment: .top)
         .clipShape(shape)
@@ -79,15 +80,14 @@ struct IslandView: View {
         .contextMenu { menu }
         .onChange(of: model.selectedProvider) { _, _ in
             showAllTime = false
-            page = 0
         }
         .animation(.spring(response: 0.6, dampingFraction: 1.0), value: expanded)
-        .animation(.easeInOut(duration: 0.3), value: used)
+        .animation(.easeInOut(duration: 0.3), value: displayedUsage)
     }
 
     // Right-click menu (replaces the menu-bar item).
     @ViewBuilder private var menu: some View {
-        Menu("Provider") {
+        Menu("用量来源") {
             ForEach(UsageProviderID.allCases) { provider in
                 Button {
                     model.selectProvider(provider)
@@ -100,7 +100,7 @@ struct IslandView: View {
                 }
             }
         }
-        Menu("Icon") {
+        Menu("图标") {
             ForEach(AvatarStyle.allCases) { style in
                 Button {
                     model.setAvatar(style)
@@ -113,75 +113,141 @@ struct IslandView: View {
                 }
             }
         }
-        Button("Refresh now") { model.refreshNow() }
-        Button(model.isPaused ? "Resume tracking" : "Pause tracking") { model.togglePause() }
-        Button((model.animateIcon ? "✓ " : "") + "Animate icon") { model.toggleAnimateIcon() }
-        Button((model.hideInFullscreen ? "✓ " : "") + "Hide in full screen") { model.toggleHideInFullscreen() }
-        Button((LoginItem.isEnabled ? "✓ " : "") + "Launch at Login") { LoginItem.toggle() }
+        Button("立即刷新") { model.refreshNow() }
+        Button(model.isPaused ? "恢复监测" : "暂停监测") { model.togglePause() }
+        Button((model.animateIcon ? "✓ " : "") + "图标动画") { model.toggleAnimateIcon() }
+        Button((model.hideInFullscreen ? "✓ " : "") + "全屏时隐藏") { model.toggleHideInFullscreen() }
+        Button((model.showDesktopWidget ? "✓ " : "") + "Codex 桌面小组件") {
+            model.toggleDesktopWidget()
+        }
+        Button((LoginItem.isEnabled ? "✓ " : "") + "开机自启") { LoginItem.toggle() }
         Divider()
-        Button("Check for Updates…") { Updater.shared.checkForUpdates() }
+        Button("检查更新…") { Updater.shared.checkForUpdates() }
         Divider()
         Button("Claude Notch v\(AppInfo.version) — \(AppInfo.tagline)") {}.disabled(true)
         Divider()
-        Button("Quit") { NSApp.terminate(nil) }
+        Button("退出") { NSApp.terminate(nil) }
     }
 
-    // MARK: closed row
+    // MARK: top row
 
     private var notchRow: some View {
-        HStack(spacing: 0) {
-            providerIcon
-                .frame(width: iconSize, height: iconSize)
-                .frame(width: wing, height: closedH)
-                .contentShape(Rectangle())
-                // Tap switches provider (Claude ⇄ Codex); the Claude icon style is picked from
-                // the right-click Icon menu.
-                .onTapGesture { model.cycleProvider() }
-                .help("Click to switch provider")
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Switch provider")
-                .accessibilityValue(model.selectedProvider.displayName)
-                .accessibilityHint("Switches between Claude and Codex")
-                .accessibilityAddTraits(.isButton)
-                .accessibilityInputLabels(["Switch provider", model.selectedProvider.displayName])
-
-            Color.clear.frame(width: gap, height: closedH)
-
-            HStack(spacing: 5) {
-                Text(provider.primaryUsage.map(Fmt.pct) ?? "—")
-                    .font(.system(size: 12, weight: .semibold)).monospacedDigit()
-                    .foregroundStyle(.white)
-                Ring(fraction: used, state: ringState(for: used), lineWidth: 3)
-                    .frame(width: 14, height: 14)
+        ZStack(alignment: .topLeading) {
+            ForEach(UsageProviderID.allCases) { item in
+                providerButton(item)
+                    .position(x: providerPosition(item), y: closedH / 2)
             }
-            .frame(width: wing, height: closedH)
-            .opacity(model.isStale ? 0.5 : 1)          // dim when data isn't fresh
-            .contentShape(Rectangle())
-            .onTapGesture { model.isExpanded.toggle() }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(model.selectedProvider.displayName) usage")
-            .accessibilityValue(provider.primaryUsage.map(Fmt.pct) ?? "unknown")
-            .accessibilityHint(model.isExpanded ? "Collapses the usage card" : "Expands the usage card")
-            .accessibilityAddTraits(.isButton)
+            usageIndicator
+                .position(x: usagePosition, y: closedH / 2)
+            if !expanded, activityState != .idle {
+                activityDot
+                    .position(x: collapsedProviderPosition - 16, y: closedH / 2)
+                    .transition(.opacity)
+            }
         }
-        .padding(.horizontal, edgeInset)
     }
 
-    @ViewBuilder private var providerIcon: some View {
-        if model.selectedProvider == .claude {
+    private var collapsedProviderPosition: CGFloat { edgeInset + wing / 2 }
+
+    private func providerPosition(_ item: UsageProviderID) -> CGFloat {
+        guard expanded else { return collapsedProviderPosition }
+        let index = UsageProviderID.allCases.firstIndex(of: item) ?? 0
+        return expandedInset + 16 + CGFloat(index) * 36
+    }
+
+    private var usagePosition: CGFloat {
+        islandWidth - (expanded ? expandedUsageInset : edgeInset) - wing / 2
+    }
+
+    private var activityState: AgentActivityState {
+        model.activityState(for: model.selectedProvider)
+    }
+
+    private var activityDot: some View {
+        let state = activityState
+        return Circle()
+            .fill(activityColor(state))
+            .frame(width: 6, height: 6)
+            .overlay(Circle().stroke(Color.black.opacity(0.7), lineWidth: 1))
+            .help(state.label)
+            .accessibilityLabel("工作状态：\(state.label)")
+    }
+
+    private func activityColor(_ state: AgentActivityState) -> Color {
+        switch state {
+        case .idle: Color.white.opacity(0.34)
+        case .working: Color(red: 0.30, green: 0.85, blue: 0.45)
+        case .thinking: Color(red: 0.50, green: 0.48, blue: 1.00)
+        case .awaitingConfirmation: Color(red: 1.00, green: 0.65, blue: 0.22)
+        }
+    }
+
+    private func providerButton(_ item: UsageProviderID) -> some View {
+        let selected = model.selectedProvider == item
+        return providerIcon(for: item)
+            .frame(width: iconSize, height: iconSize)
+            .frame(width: 32, height: 24)
+            .background(expanded && selected ? Color.white.opacity(0.16) : Color.clear, in: Capsule())
+            .overlay {
+                Capsule().stroke(
+                    Color.white.opacity(expanded && selected ? 0.22 : 0), lineWidth: 1
+                )
+            }
+            .opacity(expanded ? (selected ? 1 : 0.42) : (selected ? 1 : 0))
+            .allowsHitTesting(expanded || selected)
+            .contentShape(Capsule())
+            .onTapGesture {
+                if expanded { model.selectProvider(item) } else { model.cycleProvider() }
+            }
+            .help(expanded ? "切换到 \(item.displayName)" : "点击切换用量来源")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(item.displayName)
+            .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private var usageIndicator: some View {
+        HStack(spacing: 5) {
+            Text(displayFraction(provider.primaryUsage).map(Fmt.pct) ?? "—")
+                .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                .foregroundStyle(.white)
+            Ring(
+                fraction: displayedUsage,
+                state: model.selectedProvider == .codex
+                    ? remainingRingState(for: displayedUsage)
+                    : ringState(for: used),
+                lineWidth: 3,
+                drainsClockwise: model.selectedProvider == .codex
+            )
+                .frame(width: 14, height: 14)
+        }
+        .frame(width: wing, height: closedH)
+        .opacity(model.isStale ? 0.5 : 1)
+        .contentShape(Rectangle())
+        .onTapGesture { presentation.isExpanded.toggle() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(model.selectedProvider == .codex ? "Codex 剩余额度" : "Claude 用量")
+        .accessibilityValue(displayFraction(provider.primaryUsage).map(Fmt.pct) ?? "未知")
+        .accessibilityHint(expanded ? "收起用量卡片" : "展开用量卡片")
+        .accessibilityAddTraits(.isButton)
+    }
+
+    @ViewBuilder private func providerIcon(for item: UsageProviderID) -> some View {
+        if item == .claude {
             AvatarView(style: model.avatarStyle,
-                       active: model.animateIcon && !model.isPaused && !model.isAtLimit,
+                       active: item == model.selectedProvider && model.animateIcon
+                           && !model.isPaused && !model.isAtLimit,
                        urgency: model.iconUrgency)
         } else if let icon = Self.codexIcon {
             CodexIconView(
                 image: icon,
-                active: model.animateIcon && !model.isPaused && !model.isAtLimit,
+                active: item == model.selectedProvider && model.animateIcon
+                    && !model.isPaused && !model.isAtLimit,
                 urgency: model.iconUrgency
             )
             .opacity(model.isPaused ? 0.45 : 0.9)
         } else if let symbol = NSImage(
-            systemSymbolName: model.selectedProvider.systemImage,
-            accessibilityDescription: model.selectedProvider.displayName
+            systemSymbolName: item.systemImage,
+            accessibilityDescription: item.displayName
         ) {
             Image(nsImage: symbol)
                 .resizable()
@@ -194,164 +260,81 @@ struct IslandView: View {
         }
     }
 
-    // MARK: drop-down — two swipeable pages below the notch
+    // MARK: drop-down — one dashboard page for both providers
 
-    private var contentWidth: CGFloat { closedWidth - edgeInset * 2 }
-    private var pagerHeight: CGFloat { dropHeight - 29 }   // leaves room for the dots + padding
+    private var contentWidth: CGFloat { model.expandedIslandWidth - expandedInset * 2 }
 
     private var dropDown: some View {
-        VStack(spacing: 6) {
-            ZStack(alignment: .topLeading) {
-                HStack(spacing: 0) {
-                    pageLimits.frame(width: contentWidth, height: pagerHeight, alignment: .top)
-                    pageLocal.frame(width: contentWidth, height: pagerHeight, alignment: .top)
-                }
-                .offset(x: -CGFloat(page) * contentWidth + dragX)
-                .animation(.spring(response: 0.4, dampingFraction: 0.85), value: page)
-            }
-            .frame(width: contentWidth, height: pagerHeight, alignment: .topLeading)
-            .clipped()
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 12)
-                    .onChanged { dragX = $0.translation.width }
-                    .onEnded { v in
-                        if v.translation.width < -40 { page = min(1, page + 1) }
-                        else if v.translation.width > 40 { page = max(0, page - 1) }
-                        dragX = 0
-                    }
-            )
-            pageDots
-        }
-        .padding(.horizontal, edgeInset).padding(.top, 6).padding(.bottom, 9)
+        singlePage
+            .frame(width: contentWidth, height: dropHeight - 15, alignment: .top)
+            .padding(.horizontal, expandedInset).padding(.top, 6).padding(.bottom, 9)
     }
 
-    private var pageDots: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<2, id: \.self) { i in
-                Circle().fill(.white.opacity(i == page ? 0.85 : 0.25))
-                    .frame(width: 5, height: 5)
-                    .onTapGesture { page = i }
-                    .accessibilityLabel(i == 0 ? "Limits page" : "Detail page")
-                    .accessibilityAddTraits(i == page ? [.isButton, .isSelected] : .isButton)
-            }
-        }
-        .frame(height: 8)
-    }
-
-    // Page 1 — provider-defined account limits and summary metrics.
-    private var pageLimits: some View {
+    private var singlePage: some View {
         let snapshot = provider
-        // With a daily feed, the page is limits + the week chart as centerpiece; the plain
-        // six-tile grid remains for providers/accounts without one (API-key Codex) and for
-        // providers that keep the chart on the detail page (Claude, whose limit tiles fill this
-        // one). More than two limit windows also falls back — the windows outrank the chart.
-        let chartLayout = chartOnLimitsPage
-        let gridSlots = chartLayout ? 2 : 6
-        let remainingSlots = max(0, gridSlots - snapshot.limits.count)
+        let stats = singlePageStats
+        let tileCount = snapshot.limits.count + stats.count
+        let columnCount = tileCount > 4 ? 3 : (tileCount > 2 ? 2 : 1)
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: columnCount)
+        let summaryWidth: CGFloat = columnCount == 3 ? 380 : 270
+        let cellWidth = (summaryWidth - CGFloat(columnCount - 1) * 8) / CGFloat(columnCount)
+        let chartWidth = contentWidth - summaryWidth - 8
+        let hasStatus = snapshot.statusMessage != nil || model.isStale
         return VStack(spacing: 8) {
-            LazyVGrid(columns: [.init(.flexible(), spacing: 8), .init(.flexible(), spacing: 8)], spacing: 8) {
-                ForEach(Array(snapshot.limits.prefix(gridSlots))) { metric in
-                    providerLimitTile(metric)
+            HStack(alignment: .top, spacing: 8) {
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(snapshot.limits) { metric in
+                        providerLimitTile(metric).frame(width: cellWidth)
+                    }
+                    ForEach(stats) { metric in
+                        tile(localizedStatLabel(metric), localizedStatValue(metric),
+                             height: .compact, sub: metric.subtitle)
+                            .frame(width: cellWidth)
+                    }
                 }
-                ForEach(Array(snapshot.stats.prefix(remainingSlots))) { metric in
-                    tile(metric.label, metric.value, height: .compact, sub: metric.subtitle)
-                }
-            }
-            .opacity(model.isStale ? 0.55 : 1)         // dim live limits when not fresh
-            if chartLayout {
-                WeekActivityChart(series: snapshot.dailySeries, title: snapshot.chartTitle)
+                .frame(width: summaryWidth, height: 136, alignment: .topLeading)
+                .opacity(model.isStale ? 0.55 : 1)
+                WeekActivityChart(series: snapshot.dailySeries, title: localizedTitle(snapshot.chartTitle))
+                    .frame(width: chartWidth, height: 136)
                     .opacity(model.isStale ? 0.55 : 1)
             }
+            .frame(width: contentWidth, height: 136, alignment: .topLeading)
+            sessionsBlock(limit: hasStatus ? 1 : 2).frame(width: contentWidth)
             if let message = snapshot.statusMessage {
-                Spacer(minLength: 0)
-                Text(message).font(.system(size: 10))
+                Text(localizedStatus(message)).font(.system(size: 10))
                     .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .lineLimit(1).truncationMode(.tail)
-            } else if model.isStale {                   // only surface a problem, never chrome
-                Spacer(minLength: 0)
-                Text("reconnecting…").font(.system(size: 10))
+            } else if model.isStale {
+                Text("正在重新连接…").font(.system(size: 10))
                     .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .frame(width: contentWidth, alignment: .topLeading)
     }
 
-    /// True when the limits page hosts the week chart (Codex-style); the detail page then keeps
-    /// its stat tiles. When false and a series exists (Claude), the chart lives on the detail page.
-    private var chartOnLimitsPage: Bool {
-        let s = provider
-        return !s.dailySeries.isEmpty && !s.chartOnDetailPage && s.limits.count <= 2
-    }
-
-    // Page 2 — provider detail: the week chart (when page 1 is full of limit tiles) or the
-    // today/all-time totals, above recent sessions/tasks.
-    private var pageLocal: some View {
-        let snapshot = provider
-        let chartHere = !snapshot.dailySeries.isEmpty && !chartOnLimitsPage
-        // A bare "today: —" tile is dead weight. When the provider has no today figure but does
-        // have a daily feed, show the week total instead — always a real number.
-        let showWeek = snapshot.todayCost == nil && snapshot.todayTokens == nil
-            && snapshot.weekTokens != nil
-        // "peak 501.5M" beats the word "tokens" under the all-time figure, when known.
-        let peakDetail = snapshot.stats.first(where: { $0.id == "peak-day" })
-            .map { "peak \($0.value)" }
-        return VStack(spacing: 8) {
-            if chartHere {
-                WeekActivityChart(series: snapshot.dailySeries, title: snapshot.chartTitle)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                HStack(spacing: 8) {
-                    if showWeek {
-                        statTile("this week · account", cost: nil, tokens: snapshot.weekTokens)
-                    } else {
-                        statTile("today", cost: snapshot.todayCost, tokens: snapshot.todayTokens)
-                    }
-                    statTile("all-time", cost: snapshot.lifetimeCost, tokens: snapshot.lifetimeTokens,
-                             detail: peakDetail)
-                }
-            }
-            sessionsBlock
-            Spacer(minLength: 0)
+    private var singlePageStats: [UsageStatMetric] {
+        guard provider.provider == .codex else { return provider.stats }
+        var result: [UsageStatMetric] = []
+        if let recent = provider.stats.first(where: { $0.id == "tokens-today" })
+            ?? provider.stats.first(where: { $0.id == "tokens-yesterday" }) {
+            result.append(recent)
         }
-    }
-
-    private func statTile(_ label: String, cost: Double?, tokens: Int?,
-                          detail: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
-                .lineLimit(1).minimumScaleFactor(0.8)
-            Text(summaryPrimary(cost: cost, tokens: tokens))
-                .font(.system(size: 15, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
-            Text(detail ?? summarySecondary(cost: cost, tokens: tokens))
-                .font(.system(size: 9.5)).monospacedDigit()
-                .foregroundStyle(.white.opacity(0.45)).lineLimit(1).minimumScaleFactor(0.7)
+        for id in ["credits", "plan", "tokens-lifetime"] {
+            if let metric = provider.stats.first(where: { $0.id == id }) { result.append(metric) }
         }
-        .frame(maxWidth: .infinity, minHeight: 54, alignment: .topLeading)
-        .padding(.horizontal, 8).padding(.vertical, 8)
-        .background(Color.white.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    private func summaryPrimary(cost: Double?, tokens: Int?) -> String {
-        if let cost { return Fmt.usd(cost) }
-        if let tokens { return Fmt.tokens(tokens) }
-        return "—"
-    }
-
-    private func summarySecondary(cost: Double?, tokens: Int?) -> String {
-        if cost != nil, let tokens { return Fmt.tokens(tokens) }
-        if tokens != nil { return "tokens" }
-        return " "
+        return result
     }
 
     // Tap to flip between the provider's primary and alternate session lists when both exist.
-    private var sessionsBlock: some View {
+    private func sessionsBlock(limit: Int) -> some View {
         let snapshot = provider
         let hasAlternate = snapshot.alternateSessionsTitle != nil
         let showingAlternate = showAllTime && hasAlternate
-        let title = showingAlternate ? snapshot.alternateSessionsTitle! : snapshot.sessionsTitle
+        let title = localizedTitle(
+            showingAlternate ? snapshot.alternateSessionsTitle! : snapshot.sessionsTitle
+        )
         let sessions = showingAlternate ? snapshot.alternateSessions : snapshot.sessions
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
@@ -361,7 +344,9 @@ struct IslandView: View {
                 if hasAlternate {
                     HStack(spacing: 3) {
                         Image(systemName: "arrow.left.arrow.right").font(.system(size: 8, weight: .semibold))
-                        Text(showingAlternate ? snapshot.sessionsTitle : snapshot.alternateSessionsTitle!)
+                        Text(localizedTitle(
+                            showingAlternate ? snapshot.sessionsTitle : snapshot.alternateSessionsTitle!
+                        ))
                             .font(.system(size: 9, weight: .medium)).lineLimit(1)
                     }
                     .foregroundStyle(.white.opacity(0.5))
@@ -371,26 +356,26 @@ struct IslandView: View {
                 }
             }
             if sessions.isEmpty {
-                sessionRow("No recent activity", cost: nil, tokens: nil, last: nil, muted: true)
+                sessionRow("暂无近期活动", cost: nil, tokens: nil, last: nil, muted: true)
             } else {
-                ForEach(Array(sessions.prefix(3))) { session in
+                ForEach(Array(sessions.prefix(limit))) { session in
                     sessionRow(session.name, cost: session.cost, tokens: session.tokens,
                                last: session.last, muted: false)
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.white.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 10))
         .contentShape(Rectangle())
         .onTapGesture { if hasAlternate { showAllTime.toggle() } }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(title)
         .accessibilityHint(hasAlternate
-            ? "Switches to \(showingAlternate ? snapshot.sessionsTitle : (snapshot.alternateSessionsTitle ?? ""))"
+            ? "切换到 \(localizedTitle(showingAlternate ? snapshot.sessionsTitle : (snapshot.alternateSessionsTitle ?? "")))"
             : "")
         .accessibilityAddTraits(hasAlternate ? .isButton : [])
-        .help(hasAlternate ? "Click to switch session views" : "Recent provider activity")
+        .help(hasAlternate ? "点击切换会话视图" : "近期活动")
     }
 
     private func sessionRow(_ project: String, cost: Double?, tokens: Int?, last: Date?,
@@ -422,7 +407,9 @@ struct IslandView: View {
 
     @ViewBuilder private func providerLimitTile(_ metric: UsageLimitMetric) -> some View {
         let isClaudeSession = metric.id == "claude-session"
-        limitTile(metric.label, metric.usedFraction, resets: metric.resetsAt,
+        let label = localizedLimitLabel(metric.label) + (model.selectedProvider == .codex ? " · 剩余" : "")
+        limitTile(label, displayFraction(metric.usedFraction), resets: metric.resetsAt,
+                  warningUsage: metric.usedFraction,
                   eta: isClaudeSession && !prefReset ? model.etaToLimit : nil)
             .contentShape(Rectangle())
             .onTapGesture {
@@ -431,26 +418,31 @@ struct IslandView: View {
     }
 
     // A limit tile: label, big colour-coded %, and a "resets in …" subline.
-    private func limitTile(_ label: String, _ value: Double?, resets: Date?,
+    private func limitTile(_ label: String, _ value: Double?, resets: Date?, warningUsage: Double?,
                            eta: TimeInterval? = nil) -> some View {
         tileBox {
             Text(label).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
             Text(value.map(Fmt.pct) ?? "—")
-                .font(.system(size: 15, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(barColor(value ?? 0))
+                .font(.system(size: 18, weight: .semibold)).monospacedDigit()
+                .foregroundStyle(barColor(warningUsage ?? value ?? 0))
             if let eta {
-                Text("~\(Fmt.dur(eta)) to limit")
+                Text("约 \(Fmt.dur(eta)) 后触顶")
                     .font(.system(size: 9.5, weight: .medium)).lineLimit(1)
                     .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
             } else {
-                Text(resets.map { "resets in \(Fmt.until($0))" } ?? "resets —")
+                Text(resets.map { "\(Fmt.until($0)) 后重置" } ?? "重置时间 —")
                     .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
             }
         }
     }
 
+    private func displayFraction(_ usedFraction: Double?) -> Double? {
+        guard let usedFraction else { return nil }
+        return model.selectedProvider == .codex ? 1 - usedFraction : usedFraction
+    }
+
     enum TileHeight { case compact, tall
-        var minHeight: CGFloat { self == .compact ? 54 : 54 }   // page-1 tiles are uniform, compact
+        var minHeight: CGFloat { self == .compact ? 64 : 64 }
         var valueSize: CGFloat { self == .compact ? 15 : 17 }
     }
 
@@ -465,25 +457,93 @@ struct IslandView: View {
                     .foregroundStyle(.white.opacity(0.4)).lineLimit(1).minimumScaleFactor(0.7)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: height.minHeight, alignment: .topLeading)
         .padding(.horizontal, 10).padding(.vertical, 5)
+        .frame(maxWidth: .infinity, minHeight: height.minHeight, alignment: .topLeading)
         .background(Color.white.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private func tileBox<C: View>(@ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 1, content: content)
-            .frame(maxWidth: .infinity, minHeight: 54, alignment: .topLeading)
             .padding(.horizontal, 10).padding(.vertical, 5)
+            .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
             .background(Color.white.opacity(0.06))
             .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func localizedLimitLabel(_ label: String) -> String {
+        let parts = label.components(separatedBy: " · ")
+        guard let duration = parts.last else { return label }
+        let localizedDuration: String
+        switch duration {
+        case "5-Hour": localizedDuration = "5 小时"
+        case "7-Day": localizedDuration = "7 天"
+        case "Daily": localizedDuration = "每日"
+        case "Monthly": localizedDuration = "每月"
+        case "Annual": localizedDuration = "每年"
+        case "Limit": localizedDuration = "额度"
+        default:
+            if duration.hasSuffix("-Hour"), let value = Int(duration.dropLast(5)) {
+                localizedDuration = "\(value) 小时"
+            } else if duration.hasSuffix("-Day"), let value = Int(duration.dropLast(4)) {
+                localizedDuration = "\(value) 天"
+            } else if duration.hasSuffix("-Min"), let value = Int(duration.dropLast(4)) {
+                localizedDuration = "\(value) 分钟"
+            } else {
+                localizedDuration = duration
+            }
+        }
+        guard parts.count > 1 else { return localizedDuration }
+        return parts.dropLast().joined(separator: " · ") + " · " + localizedDuration
+    }
+
+    private func localizedStatLabel(_ metric: UsageStatMetric) -> String {
+        switch metric.id {
+        case "tokens-today": "今日 Token · 账号"
+        case "tokens-yesterday": "昨日 Token · 账号"
+        case "credits": "可用额度"
+        case "plan": "套餐"
+        case "tokens-lifetime": "Token · 累计"
+        case "peak-day": "单日峰值"
+        case "longest-task": "最长任务"
+        default: metric.label
+        }
+    }
+
+    private func localizedStatValue(_ metric: UsageStatMetric) -> String {
+        if metric.value == "unlimited" { return "无限" }
+        if metric.value == "available" { return "可用" }
+        if metric.value == "none" { return "无" }
+        guard metric.id == "longest-task" else { return metric.value }
+        return metric.value.replacingOccurrences(of: "h", with: "小时")
+            .replacingOccurrences(of: "m", with: "分")
+    }
+
+    private func localizedTitle(_ title: String) -> String {
+        switch title {
+        case "last 7 days": "近 7 天"
+        case "last 7 days · local": "近 7 天 · 本地"
+        case "last 7 days · account": "近 7 天 · 账号"
+        case "active sessions": "活跃会话"
+        case "all-time · top projects": "累计 · 高频项目"
+        case "recent tasks": "近期任务"
+        default: title
+        }
+    }
+
+    private func localizedStatus(_ message: String) -> String {
+        switch message {
+        case "Spend limit reached": "已达消费上限"
+        case "Account usage requires ChatGPT sign-in": "需登录 ChatGPT 才能查看账号用量"
+        default: message
+        }
     }
 
     private func barColor(_ used: Double) -> Color {
         switch ringState(for: used) {
         case .ok: return .white
         case .warn: return Color(red: 0.96, green: 0.70, blue: 0.20)
-        case .critical: return Color(red: 0.92, green: 0.34, blue: 0.34)
+        case .critical: return Color(red: 1.00, green: 0.42, blue: 0.42)
         }
     }
 }

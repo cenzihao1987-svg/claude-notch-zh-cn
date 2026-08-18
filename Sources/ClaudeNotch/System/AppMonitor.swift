@@ -5,14 +5,25 @@ extension NSScreen {
     static var island: NSScreen? {
         screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? main ?? screens.first
     }
+
+    var displayID: CGDirectDisplayID? {
+        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)
+            .map { CGDirectDisplayID($0.uint32Value) }
+    }
+
+    var islandTopInset: CGFloat { safeAreaInsets.top > 0 ? safeAreaInsets.top : 32 }
+
+    var islandNotchWidth: CGFloat {
+        guard safeAreaInsets.top > 0, let left = auxiliaryTopLeftArea,
+              let right = auxiliaryTopRightArea else { return 190 }
+        return frame.width - left.width - right.width
+    }
 }
 
 @MainActor @Observable
 final class AppMonitor {
     var claudeRunning = false
-    /// Notch metrics for the main screen. width==0 => no notch (use pill fallback).
-    private(set) var notchWidth: CGFloat = 0
-    private(set) var notchHeight: CGFloat = 0
+    var codexRunning = false
 
     private let claudeBundleIDs = ["com.anthropic.claudefordesktop", "com.anthropic.claude"]
     /// ChatGPT.app 的真实 bundle id，实测确认——按常识猜 com.openai.chat 会猜错。
@@ -24,13 +35,12 @@ final class AppMonitor {
                onFrontmostProvider: @escaping (UsageProviderID) -> Void = { _ in }) {
         self.onChange = onChange
         self.onFrontmostProvider = onFrontmostProvider
-        updateNotch()
-        updateClaude()
+        updateRunningApps()
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification,
                      NSWorkspace.didTerminateApplicationNotification] {
             nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.updateClaude() }
+                Task { @MainActor in self?.updateRunningApps() }
             }
         }
         nc.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
@@ -42,7 +52,7 @@ final class AppMonitor {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.updateNotch(); self?.onChange?() }
+                Task { @MainActor in self?.onChange?() }
         }
     }
 
@@ -57,24 +67,16 @@ final class AppMonitor {
         }
     }
 
-    private func updateClaude() {
+    private func updateRunningApps() {
         // Exact bundle-id match only — a loose contains("claude") would
         // false-positive on other apps (e.g. third-party usage trackers).
-        let running = NSWorkspace.shared.runningApplications.contains {
-            guard let id = $0.bundleIdentifier else { return false }
-            return claudeBundleIDs.contains(id)
-        }
-        if running != claudeRunning { claudeRunning = running; onChange?() }
-    }
-
-    private func updateNotch() {
-        guard let screen = NSScreen.island else { return }
-        notchHeight = screen.safeAreaInsets.top
-        if screen.safeAreaInsets.top > 0, let left = screen.auxiliaryTopLeftArea,
-           let right = screen.auxiliaryTopRightArea {
-            notchWidth = screen.frame.width - left.width - right.width
-        } else {
-            notchWidth = 0
+        let runningIDs = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        let claude = runningIDs.contains(where: claudeBundleIDs.contains)
+        let codex = runningIDs.contains(where: codexBundleIDs.contains)
+        if claude != claudeRunning || codex != codexRunning {
+            claudeRunning = claude
+            codexRunning = codex
+            onChange?()
         }
     }
 }

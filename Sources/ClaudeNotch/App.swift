@@ -16,21 +16,26 @@ struct Main {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     let monitor = AppMonitor()
-    var window: IslandWindow!
+    private var windows: [CGDirectDisplayID: IslandWindow] = [:]
+    private var desktopWidget: DesktopWidgetWindow?
     private var clickMonitor: Any?
     private var fullscreenTimer: Timer?
-    private var islandHidden = true   // start "hidden" so the first pass actually shows it
+    private var hoverTimer: Timer?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         model.start()
+        desktopWidget = DesktopWidgetWindow(model: model)
+        observeDesktopWidget()
         Updater.shared.start()                          // Sparkle auto-updates
-        window = IslandWindow(model: model)
         monitor.start(onChange: { [weak self] in self?.sync() },   // display / Claude changes
                       onFrontmostProvider: { [weak self] provider in
                           self?.model.selectProvider(provider, persist: false)
                       })
-        observeExpansion()
         sync()
+        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.windows.values.forEach { $0.updateHoverExpansion() } }
+        }
+        hoverTimer?.tolerance = 0.01
         // Hide-in-fullscreen: Space changes are the primary trigger; the poll catches the
         // enter-fullscreen transition early (before the Space switch lands) and any missed
         // notification. Re-armed whenever the toggle changes.
@@ -54,27 +59,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// window plus desktop windows) are left alone, since activation might land on a desktop
     /// window; the settled-state machinery covers them after the switch.
     @objc private func appActivated(_ note: Notification) {
-        guard model.hideInFullscreen, !islandHidden,
+        guard model.hideInFullscreen,
               let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-              app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
-              let screen = NSScreen.island,
-              SpaceInfo.appLivesOnlyOnFullscreenSpaces(pid: app.processIdentifier, on: screen)
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier
         else { return }
-        setHidden(true)
+        for window in windows.values where !window.isRetracted
+            && SpaceInfo.appLivesOnlyOnFullscreenSpaces(
+                pid: app.processIdentifier, on: window.screen
+            ) {
+            window.hide()
+        }
+        updateAggregatedExpansion()
     }
 
     /// The island should hide only when the user opted in *and* a fullscreen app owns the island's
     /// screen. Acts only on a change, so it's cheap to call often.
     private func updateVisibility() {
-        guard window != nil else { return }
-        setHidden(model.hideInFullscreen && Self.fullscreenPresent())
-    }
-
-    /// Apply a visibility change once (animated slide), skipping no-ops.
-    private func setHidden(_ hide: Bool) {
-        guard let window, hide != islandHidden else { return }
-        islandHidden = hide
-        if hide { window.hide() } else { window.show() }
+        for window in windows.values {
+            let hide = model.hideInFullscreen && Self.fullscreenPresent(on: window.screen)
+            if hide, !window.isRetracted {
+                window.hide()
+            } else if !hide, window.isRetracted || !window.isVisible {
+                window.show()
+            }
+        }
+        updateAggregatedExpansion()
     }
 
     /// True when a fullscreen app owns the island's display.
@@ -88,8 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// enter-fullscreen zoom (before the Space switch lands), so the pill tucks away as the
     /// transition begins rather than after it settles. SpaceInfo remains the authority for the
     /// settled state and for showing the pill again.
-    private static func fullscreenPresent() -> Bool {
-        guard let screen = NSScreen.island else { return false }
+    private static func fullscreenPresent(on screen: NSScreen) -> Bool {
         return SpaceInfo.fullscreenSpaceActive(on: screen)
             || fullscreenTransitionUnderway(on: screen)
     }
@@ -142,31 +150,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func observeDesktopWidget() {
+        desktopWidget?.setShown(model.showDesktopWidget)
+        withObservationTracking { _ = model.showDesktopWidget } onChange: { [weak self] in
+            Task { @MainActor in self?.observeDesktopWidget() }
+        }
+    }
+
     /// Push current notch geometry into the model and reposition the island to the notched
     /// screen. Runs on launch and on every display-configuration change.
     private func sync() {
-        guard let window else { return }   // monitor.start() can fire before window exists
-        model.notchWidth = monitor.notchWidth > 0 ? monitor.notchWidth : 190   // synthetic on non-notch
-        model.topInset = monitor.notchHeight > 0 ? monitor.notchHeight : 32
-        window.relayout()
+        model.claudeRunning = monitor.claudeRunning
+        model.codexRunning = monitor.codexRunning
+        let screens = Dictionary(uniqueKeysWithValues: NSScreen.screens.compactMap { screen in
+            screen.displayID.map { ($0, screen) }
+        })
+        let removedIDs = windows.keys.filter { screens[$0] == nil }
+        for id in removedIDs {
+            windows.removeValue(forKey: id)?.close()
+        }
+        for (id, screen) in screens {
+            if let window = windows[id] {
+                window.relayout(on: screen)
+            } else {
+                let window = IslandWindow(model: model, screen: screen) { [weak self] in
+                    self?.updateAggregatedExpansion()
+                }
+                windows[id] = window
+                window.relayout(on: screen)
+            }
+        }
+        desktopWidget?.ensureVisible()
         updateVisibility()
     }
 
-    /// withObservationTracking fires once, so re-arm after each change to keep tracking
-    /// isExpanded. Only the invisible click-zone is resized here — the window and the pill
-    /// animation are untouched, so nothing jumps.
-    private func observeExpansion() {
-        withObservationTracking {
-            _ = model.isExpanded
-            _ = model.expandedDropHeight   // re-sync the click-zone when the session count changes
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                self.window.updateInteractiveZone()
-                self.updateClickMonitor()
-                self.observeExpansion()
-            }
-        }
+    private func updateAggregatedExpansion() {
+        model.isExpanded = windows.values.contains(where: \.isExpanded)
+        updateClickMonitor()
     }
 
     /// While expanded, any click outside the island collapses it.
@@ -174,7 +194,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if model.isExpanded, clickMonitor == nil {
             clickMonitor = NSEvent.addGlobalMonitorForEvents(
                 matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-                    Task { @MainActor in self?.model.isExpanded = false }
+                    Task { @MainActor in
+                        self?.windows.values.forEach { $0.collapse() }
+                    }
                 }
         } else if !model.isExpanded, let m = clickMonitor {
             NSEvent.removeMonitor(m)

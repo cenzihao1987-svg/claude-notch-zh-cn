@@ -32,7 +32,13 @@ ALLOW_ADHOC=1 bash scripts/make-app.sh # 打包 dist/Claude Notch.app
 - `spec/`：设计文档 `YYYY-MM-DD-主题-design.md`，实施计划 `YYYY-MM-DD-主题-plan.md`。**都不放 `docs/`**——上游 `.gitignore` 忽略 `docs/superpowers/`，写进去会被静默丢弃；且 `docs/` 在上游用于 GitHub Pages
 - `Sources/ClaudeNotch/Core/`、`Model/`：数据层，**第一段不动**
 - `Sources/ClaudeNotch/UI/`、`System/`：展示与系统集成层，改造集中在此
-- 不新建目录、不移动既有文件
+- 不新建无归属的目录、不移动既有文件。WidgetKit 桌面小组件是独立扩展，允许使用
+  `Sources/CodexWidgetShared/`、`Sources/CodexQuotaWidget/` 与仅供视觉验收的
+  `Sources/CodexWidgetRender/`；其清单放在 `Resources/`，不得混入 Claude/Codex 数据源实现
+
+2026-08-17 新增的 `ClaudeDesktopUsageCache` 是一个只读本地数据源：读取 Claude Desktop
+已经缓存的官方 `/usage` 响应，不自行发请求。它可以新增在 `Core/`，但不得改变缓存内容、
+不得把缓存原文或组织 ID 写入日志，也不得替代下面对网络数据源的逐次授权要求。
 
 ## 安全红线
 
@@ -40,6 +46,8 @@ ALLOW_ADHOC=1 bash scripts/make-app.sh # 打包 dist/Claude Notch.app
   - 唯一例外经龟逐次授权，且只能**纯新增**：2026-08-17 为修 100% bug 新增了 Claude Desktop OAuth 数据源，既有 cookie/Keychain 分支一行未动。再要动这两个文件，仍需单独授权
 - token、cookie、API Key 不进日志、不进 commit、不进诊断信息
 - 提高轮询频率前先评估风控风险。`claude.ai/api/organizations/{org}/usage` 是用 session cookie 调用的非公开接口
+- Claude Desktop 的 `Cache/Cache_Data` 只允许只读；最多读取 1 MiB 的候选响应，解压程序只认
+  `/opt/homebrew/bin/zstd` 或 `/usr/local/bin/zstd`，不从可被注入的任意路径执行程序
 
 ## 安装
 

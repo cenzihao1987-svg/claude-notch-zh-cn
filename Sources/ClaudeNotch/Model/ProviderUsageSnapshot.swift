@@ -70,11 +70,11 @@ struct ProviderUsageSnapshot: Equatable, Sendable {
     /// Oldest-first, one point per calendar day (7 for a week view); empty = no daily feed, and
     /// the pages fall back to plain tile layouts.
     var dailySeries: [DailyUsagePoint] = []
-    var chartTitle = "last 7 days"
+    var chartTitle = "近 7 天"
     /// True = the chart belongs on the detail page (Claude: the limits page is full of limit
     /// tiles); false = it may take over the limits page (Codex: one or two windows).
     var chartOnDetailPage = false
-    var sessionsTitle = "active sessions"
+    var sessionsTitle = "活跃会话"
     var sessions: [UsageSessionMetric] = []
     var alternateSessionsTitle: String?
     var alternateSessions: [UsageSessionMetric] = []

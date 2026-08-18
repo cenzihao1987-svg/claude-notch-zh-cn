@@ -5,7 +5,7 @@ import SwiftUI
 /// whatever height the page gives it, so it works as the page's centerpiece tile.
 struct WeekActivityChart: View {
     let series: [DailyUsagePoint]   // oldest first, today last
-    var title = "last 7 days"
+    var title = "近 7 天"
 
     /// Dollar mode when any point carries a cost (Claude's local logs); token mode otherwise.
     private var usesCost: Bool { series.contains { ($0.cost ?? 0) > 0 } }
@@ -31,7 +31,7 @@ struct WeekActivityChart: View {
             }
             if maxValue == 0 {
                 Spacer(minLength: 0)
-                Text("no activity this week")
+                Text("本周暂无活动")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.35))
                     .frame(maxWidth: .infinity)
                 Spacer(minLength: 0)
@@ -85,6 +85,7 @@ struct WeekActivityChart: View {
 
     private func dayLetter(_ date: Date) -> String {
         let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_Hans_CN")
         f.dateFormat = "EEEEE"   // narrow weekday, e.g. "M"
         return f.string(from: date)
     }
