@@ -84,6 +84,7 @@ OpenAI 会不定期给 Codex 用户额外重置额度，消息来源是 Codex �
 各字段的确切来源：
 
 - **状态 1 的值** = 距 `resetsAt` 的剩余时间，用现有的 `Fmt.until`。多个窗口同时满足条件时，取 `resetsAt` 最早的那一个
+  - `Fmt.until` 在不足 1 小时时会输出「0小时40分」。状态 1 的条件是 ≤3 小时，必然会走到这一段，所以顺带把这个分支修掉（输出「40分」）。全项目只有额度格子的「X 后重置」一处调用它，那一处同样受益
 - **状态 1 的副行** = 该窗口的 `windowDurationMins` 经现有 `durationLabel` 转成的中文名（「5 小时窗口」「7 天窗口」）
 - **状态 2 的值** = `official_window.label` 经下方中文映射
 - **状态 2 的副行** = 距 `official_window.end_at` 的剩余时间。多条事件同时未过期时，取 `end_at` 最早的那一条
@@ -98,16 +99,23 @@ OpenAI 会不定期给 Codex 用户额外重置额度，消息来源是 Codex �
 
 ### 英文标签的处理
 
-`official_window.label` 是 Tibo 原文的英文摘要。已观察到的值做中文映射：
+`official_window.label` 是 Tibo 原文的英文摘要。把 timeline 全部 47 条事件扫一遍，带 `official_window` 的共 10 条，label 只有 6 种取值：
 
-| 原值 | 显示 |
-|---|---|
-| `within an hour` | 1 小时内 |
-| `within the hour` | 1 小时内 |
-| `next 30 minutes` | 30 分钟内 |
-| `next few hours` | 几小时内 |
+| 原值 | 出现次数 | 显示 |
+|---|---|---|
+| `within an hour` | 4 | 1 小时内 |
+| `within 30 minutes` | 2 | 30 分钟内 |
+| `within a few hours` | 1 | 几小时内 |
+| `later today` | 1 | 今天内 |
+| `official hint — timing unspecified` | 1 | 时间未定 |
+| `end of Monday` | 1 | 有预告 |
 
-**未观察到的值直接显示英文原文，不猜译。** 原因：猜错方向比看到英文更糟。用户看到 `in a bit` 至少知道是「快了」；若被译成「稍后」，可能理解成「还早」，做出相反决策。
+**未命中映射的值一律显示「有预告」，不猜译、也不显示英文原文。** 两条理由：
+
+1. 猜译会翻车。`in a bit` 译成「稍后」可能被读成「还早」，做出相反决策
+2. 英文原文塞不进格子。`official hint — timing unspecified` 有 34 个字符，格子宽 121pt，必然溢出
+
+「有预告」对任何 label 都成立，不含猜测成分；而真正可操作的时间信息在副行——它由 `end_at` 这个机器字段算出，不经过任何文本理解。`end of Monday` 的副行会显示「约 2 天后」，信息没丢。
 
 ## 设计三：更新时机与降级
 
@@ -144,7 +152,7 @@ OpenAI 会不定期给 Codex 用户额外重置额度，消息来源是 Codex �
 
 - `Sources/ClaudeNotch/Core/CodexUsageProvider.swift:154` — 删掉 `plan` stat tile，改为生成 `reset` stat tile
 - `Sources/ClaudeNotch/UI/IslandView.swift:314` — 格子顺序数组里 `"plan"` 换成 `"reset"`
-- `Sources/ClaudeNotch/UI/IslandView.swift:495` — 标签映射 `"plan": "套餐"` 换成 `"reset": "重置"`
+- `Sources/ClaudeNotch/UI/IslandView.swift:495` — 把标签映射里的 `"plan": "套餐"` **整行删掉**，不要换成 `"reset": "重置"`。重置格子的 label 随状态变（即将重置 / Tibo 预告 / 距上次重置），在这里写死一个「重置」会把三个状态全盖掉。该 switch 末尾的 `default: metric.label` 会把 mapper 产出的中文标签原样放行
 - `Sources/ClaudeNotch/UI/AppModel.swift` — 持有 service，在 `fetchCodexUsage` 中带上 forecast 数据
 
 复用现有 `tile()` 渲染，三行结构（label / 值 / 副行）与旁边格子完全一致。**不加特殊配色。**
@@ -153,14 +161,14 @@ OpenAI 会不定期给 Codex 用户额外重置额度，消息来源是 Codex �
 
 ## 验证方式
 
-本机 Command Line Tools 缺少 `Testing` 模块，`swift test` 无法运行（影响全部 5 个既有测试文件，非本次引入）。按项目既定规则，以实跑验证替代。
+本机 Command Line Tools 缺少 `Testing` 模块，`swift test` 无法运行（影响全部 8 个既有测试文件，非本次引入）。按项目既定规则，以实跑验证替代。
 
 1. `swift build` 编译通过
 2. 断网启动，确认格子显示 `—` 而非崩溃或错误数字
 3. 联网后切到 Codex 卡片，确认状态 3 显示的天数与 `/api/forecast` 的 `age_days` 一致
 4. 用 `os.Logger` 确认：切到 Claude 卡片时不发外部请求；6 小时内重复切换 Codex 只拉一次
 5. 状态 1 需等 5 小时窗口进入 3 小时内实际观察
-6. 状态 2 只能等 Tibo 下次发预告时观察，无法主动触发。**在此之前状态 2 视为未验证**
+6. 状态 2 无法等 Tibo 真的发预告（26% 覆盖率、窗口只有 30–60 分钟）。改为临时去掉过期判断，让 timeline 里 10 条历史预告被选中，跑通「映射 → 格式化 → 渲染」三段，看到后立即还原
 
 ## 风险
 
