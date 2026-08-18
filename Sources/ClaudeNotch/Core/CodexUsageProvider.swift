@@ -7,16 +7,19 @@ actor CodexUsageProvider {
     /// execute there, and blocking a cooperative thread starves every other task in the app.
     private static let transportQueue = DispatchQueue(label: "codex-app-server", qos: .utility)
 
-    func fetch() async -> ProviderUsageSnapshot {
+    func fetch(forecast: CodexResetForecast? = nil) async -> ProviderUsageSnapshot {
         let transport = transport
         return await withCheckedContinuation { continuation in
             Self.transportQueue.async {
-                continuation.resume(returning: Self.snapshot(using: transport))
+                continuation.resume(returning: Self.snapshot(using: transport, forecast: forecast))
             }
         }
     }
 
-    private static func snapshot(using transport: CodexAppServerTransport) -> ProviderUsageSnapshot {
+    private static func snapshot(
+        using transport: CodexAppServerTransport,
+        forecast: CodexResetForecast?
+    ) -> ProviderUsageSnapshot {
         do {
             let exchange = try transport.fetch()
             let account = exchange.decode(CodexAccountResponse.self, id: 2)
@@ -40,6 +43,7 @@ actor CodexUsageProvider {
                 usage: usage,
                 threads: threads,
                 errors: errors,
+                forecast: forecast,
                 now: Date()
             )
         } catch {
@@ -121,6 +125,7 @@ enum CodexSnapshotMapper {
         usage: CodexAccountUsageResponse?,
         threads: CodexThreadListResponse?,
         errors: [Int: String] = [:],
+        forecast: CodexResetForecast? = nil,
         now: Date
     ) -> ProviderUsageSnapshot {
         let limits = rateLimits.map(makeLimits) ?? []
@@ -151,9 +156,9 @@ enum CodexSnapshotMapper {
             stats.append(.init(id: "tokens-yesterday", label: "yesterday · account",
                                value: Fmt.tokens(yesterday.tokens), subtitle: nil))
         }
-        if let planName {
-            stats.append(.init(id: "plan", label: "plan", value: planName, subtitle: nil))
-        }
+        // 「套餐」是一次性信息（看一眼就知道自己是 Plus），这个位置换成会变的重置提醒。
+        // 永远 append，没有数据时是「重置 / —」，六宫格不会因为断网塌成五格。
+        stats.append(CodexResetTile.make(limits: limits, forecast: forecast, now: now))
         if let lifetimeTokens {
             stats.append(.init(id: "tokens-lifetime", label: "tokens · all-time",
                                value: Fmt.tokens(lifetimeTokens), subtitle: nil))

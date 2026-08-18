@@ -175,7 +175,7 @@ import Testing
         let ids = snapshot.stats.map(\.id)
         #expect(!ids.contains("credits"))   // zero balance: no dead-weight credits tile
         // Spare stats stay behind the important ones so a six-slot grid drops them first.
-        #expect(ids.firstIndex(of: "peak-day")! > ids.firstIndex(of: "plan")!)
+        #expect(ids.firstIndex(of: "peak-day")! > ids.firstIndex(of: "reset")!)
     }
 
     @Test func buildsZeroFilledWeekSeriesEndingToday() throws {
