@@ -321,7 +321,7 @@ struct IslandView: View {
             ?? provider.stats.first(where: { $0.id == "tokens-yesterday" }) {
             result.append(recent)
         }
-        for id in ["credits", "plan", "tokens-lifetime"] {
+        for id in ["credits", "reset", "tokens-lifetime"] {
             if let metric = provider.stats.first(where: { $0.id == id }) { result.append(metric) }
         }
         return result
@@ -502,7 +502,8 @@ struct IslandView: View {
         case "tokens-today": "今日 Token · 账号"
         case "tokens-yesterday": "昨日 Token · 账号"
         case "credits": "可用额度"
-        case "plan": "套餐"
+        // 重置格子不在这里映射：它的 label 随状态变（即将重置 / Tibo 预告 / 距上次重置），
+        // 写死一个「重置」会把三个状态全盖掉。末尾的 default 会原样放行。
         case "tokens-lifetime": "Token · 累计"
         case "peak-day": "单日峰值"
         case "longest-task": "最长任务"
