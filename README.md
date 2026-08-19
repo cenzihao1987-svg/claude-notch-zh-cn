@@ -13,6 +13,8 @@
 这是基于 [stevemcqueenz/claude-notch-tracker](https://github.com/stevemcqueenz/claude-notch-tracker)
 继续开发的简体中文版本，保留上游的 MIT 许可证与版权说明。
 
+[English README](README.en.md)
+
 ## 最新效果
 
 ![Claude Notch v0.4.0：展开后的 Codex 单页额度、近 7 天图表与近期任务](docs/media/claude-notch-v0.4.0.png)
@@ -42,21 +44,6 @@
 - Codex 使用官方本地 `codex app-server`；不读取或上传提示词、账号邮箱和登录 token。
 - 重置提醒只请求不带鉴权、不携带用户信息的 `codex-reset.com` 公开 JSON；该网站负责解析 Tibo 的 X 公告。
 
-## 从源码构建
-
-需要 macOS 14+ 与完整 Xcode：
-
-```bash
-git clone https://github.com/cenzihao1987-svg/claude-notch-zh-cn.git
-cd claude-notch-zh-cn
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-swift test
-swift build -c release
-ALLOW_ADHOC=1 bash scripts/make-app.sh
-```
-
-`make-app.sh` 会清空并重新生成 `dist/`。没有 Developer ID 证书时，产物仅适合本机测试；对外发布应使用稳定的 Apple Developer ID 签名并完成公证。
-
 ## 开源许可证与致谢
 
-本项目按 [MIT License](LICENSE) 开源。感谢原作者及上游项目的设计、实现与资源。
+本项目按 [MIT License](LICENSE) 开源。感谢原仓库作者 **Stanislav Kulik** 的设计、实现与开源分享，也感谢所有上游贡献者。
