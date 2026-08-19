@@ -19,7 +19,7 @@
 
 ![Claude Notch v0.4.0：展开后的 Codex 单页额度、近 7 天图表与近期任务](docs/media/claude-notch-v0.4.0.png)
 
-[查看 18 秒操作演示视频](docs/media/claude-notch-v0.4.0-demo.mp4)
+![Claude Notch v0.4.0：18 秒操作演示](docs/media/claude-notch-v0.4.0-demo.gif)
 
 ## 主要功能
 

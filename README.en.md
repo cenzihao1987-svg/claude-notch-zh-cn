@@ -20,7 +20,7 @@ It retains the upstream MIT license and attribution.
 
 ![Claude Notch v0.4.0: Codex single-page quota view, 7-day chart, and recent tasks](docs/media/claude-notch-v0.4.0.png)
 
-[Watch the 18-second interaction demo](docs/media/claude-notch-v0.4.0-demo.mp4)
+![Claude Notch v0.4.0: 18-second interaction demo](docs/media/claude-notch-v0.4.0-demo.gif)
 
 ## Highlights
 
