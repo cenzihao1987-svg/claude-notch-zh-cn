@@ -9,6 +9,13 @@ import Foundation
 @MainActor
 @Suite struct RefreshBackoffTests {
 
+    @Test func desktopOnlyFallbackRejectsOtherApps() {
+        #expect(ClaudeAPIService.isAllowedFallbackSource("Claude Desktop"))
+        #expect(!ClaudeAPIService.isAllowedFallbackSource("Chrome"))
+        #expect(!ClaudeAPIService.isAllowedFallbackSource("Microsoft Edge"))
+        #expect(!ClaudeAPIService.isAllowedFallbackSource("Claude Code"))
+    }
+
     @Test func collapsedBaselineIsNinetySeconds() {
         let model = AppModel()
         model.isExpanded = false

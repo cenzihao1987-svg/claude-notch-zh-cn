@@ -41,7 +41,7 @@ actor CodexResetForecastService {
         guard fresh != cached else { return false }
         cached = fresh
         // 单行字符串：os.Logger 的 OSLogMessage 对多行字面量支持不稳，不要拆行。
-        Self.log.notice("reset forecast updated: age=\(fresh.ageDays ?? -1, privacy: .public)d window=\(fresh.officialWindowLabel ?? "none", privacy: .public)")
+        Self.log.notice("reset forecast updated: age=\(fresh.ageDays ?? -1, privacy: .public)d odds24h=\(fresh.probability24h ?? -1, privacy: .public) odds48h=\(fresh.probability48h ?? -1, privacy: .public) window=\(fresh.officialWindowLabel ?? "none", privacy: .public)")
         return true
     }
 
@@ -59,7 +59,9 @@ actor CodexResetForecastService {
             ageDays: forecast?.ageDays,
             recentMedianDays: forecast?.cadence?.recentMedianDays,
             officialWindowLabel: nil,
-            officialWindowEnd: nil
+            officialWindowEnd: nil,
+            probability24h: forecast?.probabilities?.rounded24H,
+            probability48h: forecast?.probabilities?.rounded48H
         )
         // 这里必须用 if let 而不是 `window?.label`：label 本身是 String?，
         // 再走一层可选链就成了 String??，赋不进 officialWindowLabel。
@@ -113,8 +115,16 @@ actor CodexResetForecastService {
         struct Cadence: Decodable {
             let recentMedianDays: Double?
         }
+        struct Probabilities: Decodable {
+            // 注意大写的 H。decoder 开了 convertFromSnakeCase，它把 "rounded_24h"
+            // 转成 "rounded24H" —— 数字后面那个字母会被当成新词首字母大写。
+            // 写成 rounded24h 不会报错，只会静默解析成 nil，格子永远不显示。
+            let rounded24H: Int?
+            let rounded48H: Int?
+        }
         let ageDays: Double?
         let cadence: Cadence?
+        let probabilities: Probabilities?
     }
 
     private struct TimelinePayload: Decodable {

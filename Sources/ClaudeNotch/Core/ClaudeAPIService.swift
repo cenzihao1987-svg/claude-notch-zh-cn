@@ -26,6 +26,10 @@ struct ClaudeLimits: Sendable {
 /// work stays off the main thread.
 actor ClaudeAPIService {
 
+    static func isAllowedFallbackSource(_ source: String) -> Bool {
+        source == "Claude Desktop"
+    }
+
     private struct Source {
         let name: String
         let path: URL
@@ -56,7 +60,7 @@ actor ClaudeAPIService {
     /// `force` (the Refresh now menu action) drops the cached session and any source backoffs so
     /// a fresh login is picked up immediately. Cached Keychain keys are kept — re-reading those is
     /// exactly what raises the authorization prompt, and the key itself never changes.
-    func fetch(force: Bool = false) async -> ClaudeLimits? {
+    func fetchFromClaudeDesktop(force: Bool = false) async -> ClaudeLimits? {
         if force {
             sessionCache = nil
             backoffUntil.removeAll()
@@ -65,7 +69,8 @@ actor ClaudeAPIService {
             keyCache = keyCache.filter { $0.value != nil }   // retry denials, keep good keys
         }
         // 1. Reuse the known-good session: no Keychain, no SQLite, no prompt.
-        if let s = sessionCache, Date().timeIntervalSince(s.at) < sessionTTL {
+        if let s = sessionCache, Self.isAllowedFallbackSource(s.source),
+           Date().timeIntervalSince(s.at) < sessionTTL {
             switch await request(org: s.org, cookies: s.cookies, source: s.source) {
             case .ok(let limits): return limits
             case .offline: return nil          // keep the cache, try again on the next tick
@@ -74,7 +79,7 @@ actor ClaudeAPIService {
         }
         // 2. Try stores, the one that worked last time first, so a healthy setup only ever
         //    touches a single Keychain item.
-        for source in orderedSources() {
+        for source in orderedSources() where Self.isAllowedFallbackSource(source.name) {
             if let until = backoffUntil[source.name], until > Date() { continue }
             guard let cookies = readCookies(from: source),
                   let org = cookies["lastActiveOrg"], cookies["sessionKey"] != nil
@@ -99,9 +104,8 @@ actor ClaudeAPIService {
         // claude.ai calls above are answered with one, which is what happens on many networks.
         if let limits = await fetchFromDesktopOAuth() { return limits }
 
-        // Terminal-only fallback: the Claude Code CLI's own OAuth token, so users with neither
-        // Claude Desktop nor a logged-in browser still get real numbers.
-        return await fetchFromCLIToken()
+        // Never turn a failed Desktop read into another prompt for Chrome, Edge, or Claude Code.
+        return nil
     }
 
     /// Candidate stores with the last known-good one moved to the front.

@@ -39,6 +39,10 @@ final class AppModel {
     /// Keep the Codex quota card on the desktop. Persisted; default on.
     var showDesktopWidget: Bool =
         (UserDefaults.standard.object(forKey: "showDesktopWidget") as? Bool) ?? true
+    /// Credential-free by default. The user must explicitly opt in before any Keychain read.
+    private(set) var claudeCredentialFallbackEnabled =
+        UserDefaults.standard.bool(forKey: "claudeCredentialFallbackEnabled")
+    private(set) var claudeWaitingForDesktopUsage = false
     /// Live account limits from claude.ai (authoritative, matches Claude Desktop).
     private(set) var limits: ClaudeLimits?
     /// Context window remaining, 0…1, from the terminal statusline feed (nil if unknown).
@@ -227,7 +231,8 @@ final class AppModel {
             },
             planName: claudeSubscriptionTier == .pro ? "Claude Pro" : planName,
             source: claudeUsageSource,
-            fetchedAt: limits?.fetchedAt ?? statuslineFetchedAt
+            fetchedAt: limits?.fetchedAt ?? statuslineFetchedAt,
+            statusMessage: claudeWaitingForDesktopUsage ? "等待 Claude 客户端更新…" : nil
         )
     }
 
@@ -352,6 +357,16 @@ final class AppModel {
         showDesktopWidget.toggle()
         UserDefaults.standard.set(showDesktopWidget, forKey: "showDesktopWidget")
     }
+    func toggleClaudeCredentialFallback() {
+        claudeCredentialFallbackEnabled.toggle()
+        UserDefaults.standard.set(
+            claudeCredentialFallbackEnabled,
+            forKey: "claudeCredentialFallbackEnabled"
+        )
+        claudeFailures = 0
+        claudeAttemptedAt = nil
+        fetchLimits(force: claudeCredentialFallbackEnabled)
+    }
 
     /// 展开态每个 tick 都刷；折叠态至少隔 collapsedInterval 秒才刷一次。
     /// 2026-08-17 先用过 15/45，把账号打到了 api.anthropic.com 的 429，回退到这一档。
@@ -430,18 +445,29 @@ final class AppModel {
                     self.discardExpiredDesktopCachedUsage()
                 } else {
                     self.applyDesktopCachedUsage(cached)
-                    if !force || cached.isFresh(after: 300) {
+                    let isFresh = cached.isFresh(after: 300)
+                    self.claudeWaitingForDesktopUsage =
+                        !isFresh && !self.claudeCredentialFallbackEnabled
+                    if !force || isFresh {
                         self.claudeFailures = 0
                         return
                     }
                 }
             }
 
+            guard self.claudeCredentialFallbackEnabled else {
+                self.claudeWaitingForDesktopUsage = true
+                self.claudeFailures = 0
+                return
+            }
+            self.claudeWaitingForDesktopUsage = false
+
             let gap = self.claudeAttemptedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             guard force || gap >= self.claudeMinGap else { return }
             self.claudeAttemptedAt = Date()
             Self.log.notice("claude network, \(gap.isFinite ? Int(gap) : -1, privacy: .public)s since last, \(self.claudeFailures, privacy: .public) fails")
-            guard let l = await claudeAPI.fetch(force: force), l.sessionPct != nil else {
+            guard let l = await claudeAPI.fetchFromClaudeDesktop(force: force),
+                  l.sessionPct != nil else {
                 self.claudeFailures += 1
                 // 退避要从「失败」起算，不是从「发起」起算。请求本身可能耗掉比退避还长的时间
                 // （钥匙串授权框挂了 623 秒），那样退避窗口在请求回来前就被消耗光，

@@ -11,6 +11,10 @@ struct CodexResetForecast: Equatable, Sendable {
     var officialWindowLabel: String?
     /// 那个窗口的结束时刻。既用来判断预告是否过期，也用来算倒计时。
     var officialWindowEnd: Date?
+    /// 未来 24 小时内发生重置的概率，整数百分比。来自 `probabilities.rounded_24h`。
+    var probability24h: Int?
+    /// 未来 48 小时内的同一个数。
+    var probability48h: Int?
 }
 
 /// 决定「重置」格子显示什么。
@@ -30,6 +34,7 @@ enum CodexResetTile {
     ) -> UsageStatMetric {
         imminentLocalReset(limits, now: now)
             ?? announcedWindow(forecast, now: now)
+            ?? resetOdds(forecast)
             ?? cadenceFacts(forecast)
             ?? UsageStatMetric(id: "reset", label: "重置", value: "—", subtitle: nil)
     }
@@ -129,11 +134,29 @@ enum CodexResetTile {
         return "\(max(1, s / 60)) 分钟"
     }
 
-    // MARK: - 优先级 3：节奏事实
+    // MARK: - 优先级 3：重置概率
 
-    /// 显示事实而非概率。接口给的 `rounded_24h: 30` 在它自己的 backtest 里
-    /// 只比基线好 3%（brier 0.100 vs 0.103），基本是个常数，看一年也不会变。
-    /// 「距上次 5.1 天 · 近期 2.3 天一轮」让用户自己判断「超期一倍了」。
+    /// 闲置时最有决策价值的一个数：今晚到明天值不值得等。
+    ///
+    /// 这个概率的绝对精度不高（接口自己的 backtest 里 brier 0.100，只比基线 0.103 好 3%），
+    /// 但用户要的不是精度，是一个能横向比较、会随天数推移变化的信号 ——
+    /// 「30%」能支撑「今晚别等了」的决定，「距上次 6 天」不能。
+    /// 口径是未来 24 小时；重置窗口固定在 UTC 23:00–02:00（北京时间早上），
+    /// 所以对国内用户来说「明天」和「24 小时内」指的是同一件事。
+    private static func resetOdds(_ forecast: CodexResetForecast?) -> UsageStatMetric? {
+        guard let forecast, let odds = forecast.probability24h else { return nil }
+        return UsageStatMetric(
+            id: "reset",
+            label: "明天重置",
+            value: "\(odds)%",
+            subtitle: forecast.probability48h.map { "两天内 \($0)%" }
+        )
+    }
+
+    // MARK: - 优先级 4：节奏事实
+
+    /// 概率缺失时的兜底（接口降级成 heuristic 模式时会没有 probabilities）。
+    /// 「距上次 6.0 天 · 近期 2.3 天一轮」让用户自己判断「超期了」。
     private static func cadenceFacts(_ forecast: CodexResetForecast?) -> UsageStatMetric? {
         // 同上，先解包 forecast，否则 subtitle 会是 String?? 而不是 String?。
         guard let forecast, let age = forecast.ageDays else { return nil }

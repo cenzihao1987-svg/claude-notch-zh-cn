@@ -30,6 +30,7 @@ struct IslandView: View {
     private let wing: CGFloat = 56
     private let iconSize: CGFloat = 18
     private let edgeInset: CGFloat = 12
+    private let closedUsageInset: CGFloat = 20
     private let expandedInset: CGFloat = 24
     private let expandedUsageInset: CGFloat = 32
     private var dropHeight: CGFloat { model.expandedDropHeight }
@@ -77,7 +78,6 @@ struct IslandView: View {
                alignment: .top)
         .clipShape(shape)
         .contentShape(shape)
-        .contextMenu { menu }
         .onChange(of: model.selectedProvider) { _, _ in
             showAllTime = false
         }
@@ -85,8 +85,7 @@ struct IslandView: View {
         .animation(.easeInOut(duration: 0.3), value: displayedUsage)
     }
 
-    // Right-click menu (replaces the menu-bar item).
-    @ViewBuilder private var menu: some View {
+    @ViewBuilder private var settingsMenu: some View {
         Menu("用量来源") {
             ForEach(UsageProviderID.allCases) { provider in
                 Button {
@@ -114,6 +113,10 @@ struct IslandView: View {
             }
         }
         Button("立即刷新") { model.refreshNow() }
+        Button((model.claudeCredentialFallbackEnabled ? "✓ " : "")
+            + "Claude 备用获取（可能要求密码）") {
+            model.toggleClaudeCredentialFallback()
+        }
         Button(model.isPaused ? "恢复监测" : "暂停监测") { model.togglePause() }
         Button((model.animateIcon ? "✓ " : "") + "图标动画") { model.toggleAnimateIcon() }
         Button((model.hideInFullscreen ? "✓ " : "") + "全屏时隐藏") { model.toggleHideInFullscreen() }
@@ -156,7 +159,7 @@ struct IslandView: View {
     }
 
     private var usagePosition: CGFloat {
-        islandWidth - (expanded ? expandedUsageInset : edgeInset) - wing / 2
+        islandWidth - (expanded ? expandedUsageInset : closedUsageInset) - wing / 2
     }
 
     private var activityState: AgentActivityState {
@@ -206,6 +209,17 @@ struct IslandView: View {
     }
 
     private var usageIndicator: some View {
+        HStack(spacing: expanded ? 8 : 5) {
+            usageSummary
+            if expanded {
+                settingsButton
+            }
+        }
+        .frame(width: expanded ? 88 : wing, height: closedH, alignment: .trailing)
+        .opacity(model.isStale ? 0.5 : 1)
+    }
+
+    private var usageSummary: some View {
         HStack(spacing: 5) {
             Text(displayFraction(provider.primaryUsage).map(Fmt.pct) ?? "—")
                 .font(.system(size: 12, weight: .semibold)).monospacedDigit()
@@ -220,8 +234,6 @@ struct IslandView: View {
             )
                 .frame(width: 14, height: 14)
         }
-        .frame(width: wing, height: closedH)
-        .opacity(model.isStale ? 0.5 : 1)
         .contentShape(Rectangle())
         .onTapGesture { presentation.isExpanded.toggle() }
         .accessibilityElement(children: .ignore)
@@ -229,6 +241,25 @@ struct IslandView: View {
         .accessibilityValue(displayFraction(provider.primaryUsage).map(Fmt.pct) ?? "未知")
         .accessibilityHint(expanded ? "收起用量卡片" : "展开用量卡片")
         .accessibilityAddTraits(.isButton)
+    }
+
+    private var settingsButton: some View {
+        Menu {
+            settingsMenu
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.78))
+                .frame(width: 24, height: 24)
+                .background(Color.white.opacity(0.10), in: Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("设置")
+        .accessibilityLabel("设置")
+        .accessibilityHint("打开 Claude Notch 设置菜单")
     }
 
     @ViewBuilder private func providerIcon(for item: UsageProviderID) -> some View {

@@ -5,10 +5,12 @@ import Testing
 @Suite("Claude Desktop usage cache")
 struct ClaudeDesktopUsageCacheTests {
     @Test func parsesOfficialUsageResponse() throws {
-        let data = Data(#"{
+        let data = Data(#"""
+        {
           "five_hour":{"utilization":92.0,"resets_at":"2026-08-17T11:59:59.884933+00:00"},
           "seven_day":{"utilization":21.0,"resets_at":"2026-08-21T23:59:59.884960+00:00"}
-        }"#.utf8)
+        }
+        """#.utf8)
         let fetchedAt = Date(timeIntervalSince1970: 1_786_958_979)
 
         let result = try #require(ClaudeDesktopUsageCache.parseUsageJSON(data, fetchedAt: fetchedAt))
