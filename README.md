@@ -4,9 +4,13 @@
 
 **Live Claude and Codex usage in your Mac's notch: limits, resets, tokens, and cost.**
 
+> This is the Simplified Chinese fork. It adds Chinese localization, a one-page expanded layout,
+> multi-display islands, a Codex desktop widget, and safer Claude Desktop cache-first usage reads.
+> See [中文说明](README.zh-CN.md).
+
 <img src="docs/demo.gif" width="640" alt="Claude Notch: click to expand, swipe between the limits and detail pages, and tap to switch active sessions or all-time" />
 
-[![Latest release](https://img.shields.io/github/v/release/stevemcqueenz/claude-notch-tracker?color=CC785C&label=download)](https://github.com/stevemcqueenz/claude-notch-tracker/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/cenzihao1987-svg/claude-notch-zh-cn?color=CC785C&label=download)](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases/latest)
 &nbsp;![macOS 14+](https://img.shields.io/badge/macOS-14+-111111?logo=apple&logoColor=white)
 &nbsp;[![License MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -125,8 +129,8 @@ local Claude session. To keep it around, right-click the island and choose *Laun
 **Build from source:**
 
 ```bash
-git clone https://github.com/stevemcqueenz/claude-notch-tracker
-cd claude-notch-tracker
+git clone https://github.com/cenzihao1987-svg/claude-notch-zh-cn
+cd claude-notch-zh-cn
 swift run ClaudeNotch        # dev run
 bash scripts/make-app.sh     # builds dist/Claude Notch.app + a shareable zip
 ```

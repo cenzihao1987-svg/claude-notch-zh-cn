@@ -1,23 +1,17 @@
+import AppKit
 import Foundation
-import Sparkle
 
-/// Wraps Sparkle's updater. Auto-checks per Info.plist (SUEnableAutomaticChecks); the menu's
-/// "Check for Updates…" calls `checkForUpdates()`. No-ops in the raw dev binary (Sparkle needs
-/// a real bundle with SUFeedURL / SUPublicEDKey).
+/// This fork is distributed without a notarized Sparkle feed. The update action opens its
+/// GitHub releases page, avoiding unverified background updates from the upstream project.
 @MainActor
 final class Updater {
     static let shared = Updater()
-    private let controller: SPUStandardUpdaterController?
 
-    private init() {
-        controller = Bundle.main.bundleIdentifier != nil
-            ? SPUStandardUpdaterController(startingUpdater: true,
-                                           updaterDelegate: nil, userDriverDelegate: nil)
-            : nil
-    }
+    private static let releasesURL = URL(
+        string: "https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases"
+    )!
 
-    /// Force initialization (starts the background updater).
-    func start() { _ = controller }
+    func start() {}
 
-    func checkForUpdates() { controller?.updater.checkForUpdates() }
+    func checkForUpdates() { NSWorkspace.shared.open(Self.releasesURL) }
 }
