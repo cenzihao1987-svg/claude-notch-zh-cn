@@ -1,162 +1,62 @@
 <div align="center">
 
-# 🦀 Claude & Codex Notch Usage Companion
+# Claude Notch 中文版
 
-**Live Claude and Codex usage in your Mac's notch: limits, resets, tokens, and cost.**
+**在 Mac 刘海区域查看 Claude 与 Codex 的实时额度、重置时间和近期活动。**
 
-> This is the Simplified Chinese fork. It adds Chinese localization, a one-page expanded layout,
-> multi-display islands, a Codex desktop widget, and safer Claude Desktop cache-first usage reads.
-> See [中文说明](README.zh-CN.md).
-
-<img src="docs/demo.gif" width="640" alt="Claude Notch: click to expand, swipe between the limits and detail pages, and tap to switch active sessions or all-time" />
-
-[![Latest release](https://img.shields.io/github/v/release/cenzihao1987-svg/claude-notch-zh-cn?color=CC785C&label=download)](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases/latest)
-&nbsp;![macOS 14+](https://img.shields.io/badge/macOS-14+-111111?logo=apple&logoColor=white)
-&nbsp;[![License MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-
-<br/>
-
-<a href="https://www.producthunt.com/products/mac-claude-notch-usage-tracker?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-mac-claude-notch-usage-companion" target="_blank" rel="noopener noreferrer"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1194655&theme=light" alt="Claude Notch on Product Hunt" width="250" height="54" /></a>
+[![Release](https://img.shields.io/github/v/release/cenzihao1987-svg/claude-notch-zh-cn?color=CC785C&label=下载)](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases/latest)
+&nbsp; ![macOS 14+](https://img.shields.io/badge/macOS-14+-111111?logo=apple&logoColor=white)
+&nbsp; [![MIT License](https://img.shields.io/badge/许可证-MIT-blue)](LICENSE)
 
 </div>
 
-Collapsed, it's just **Clawd** (the crab) and your session % beside the camera. Click it and the
-island glides open into a two-page card you can **swipe** through. Your real limits sit up front;
-your spend and sessions sit behind. Click away and it glides shut. No Dock icon, no menu-bar clutter.
+这是基于 [stevemcqueenz/claude-notch-tracker](https://github.com/stevemcqueenz/claude-notch-tracker)
+继续开发的简体中文版本，保留上游的 MIT 许可证与版权说明。
 
-## Screenshots
+## 最新效果
 
-<table align="center">
-<tr>
-<td align="center" width="50%">
-  <img src="docs/page-limits.png" width="340" alt="Limits page: 5-Hour, 7-Day, Fable weekly, and today's cost and tokens" /><br/>
-  <sub><b>Limits</b>: 5-hour, 7-day, Fable weekly, plus today's cost</sub>
-</td>
-<td align="center" width="50%">
-  <img src="docs/page-sessions.png" width="340" alt="Claude week chart and active sessions: last 7 days of local spend above today's conversations" /><br/>
-  <sub><b>Week + sessions</b>: 7 days of spend, live conversations</sub>
-</td>
-</tr>
-<tr>
-<td align="center" width="50%">
-  <img src="docs/page-alltime.png" width="340" alt="All-time top projects: biggest-spending projects ever" /><br/>
-  <sub><b>All-time top projects</b>: tap the ⇄ chip to switch</sub>
-</td>
-<td align="center" width="50%">
-  <img src="docs/settings.png" width="340" alt="Right-click settings menu: provider, icon, pause, hide in full screen, launch at login, updates" /><br/>
-  <sub><b>Settings</b>: right-click the island</sub>
-</td>
-</tr>
-<tr>
-<td align="center" width="50%">
-  <img src="docs/codex-limits.png" width="340" alt="Codex limits page: rate-limit windows above the 7-day token chart" /><br/>
-  <sub><b>Codex limits</b>: windows + the 7-day token chart</sub>
-</td>
-<td align="center" width="50%">
-  <img src="docs/codex-tasks.png" width="340" alt="Codex detail page: weekly and all-time account totals above recent tasks" /><br/>
-  <sub><b>Codex tasks</b>: account totals + recent tasks</sub>
-</td>
-</tr>
-</table>
+![Claude Notch v0.4.0：展开后的 Codex 单页额度、近 7 天图表与近期任务](docs/media/claude-notch-v0.4.0.png)
 
-<div align="center">
-  <img src="docs/switch.gif" width="640" alt="One click on the left icon switches the island between Claude and Codex, collapsed or expanded" /><br/>
-  <sub><b>One click switches providers</b>: Claude ⇄ Codex, even while expanded</sub>
-</div>
+[查看 18 秒操作演示视频](docs/media/claude-notch-v0.4.0-demo.mp4)
 
-## Features
+## 主要功能
 
-- **Real limit tiles.** Your **5-hour** session, **7-day** weekly, *and* **Fable's own weekly
-  limit**. Fable is metered separately, so you get the same three bars the Claude desktop app
-  shows, each with a reset countdown and colour-coded urgency.
-- **Claude and Codex providers.** Click the left icon to switch providers. Codex windows, token
-  totals, credits, and recent tasks come from the official local `codex app-server` interface.
-- **Two pages, one swipe.** Limits up front. Swipe (or tap the dots) to a local detail page with
-  today versus all-time spend, plus your live sessions.
-- **Named sessions.** Your actual **conversation titles** from the sidebar, with today's spend per
-  conversation. Tap the block to flip to your **all-time biggest projects**.
-- **Cost, live.** Cost today with an **"~$X by tonight"** projection, your usage-credit balance,
-  and all-time totals from a full-history scan of your logs.
-- **A week at a glance.** Both providers chart the **last 7 days** right in the island: Claude's
-  local spend in dollars, Codex's account tokens, with today highlighted and the peak day labeled.
-- **Any Claude login works.** Use **Claude Desktop**, a **browser** signed into claude.ai, or the
-  **Claude Code CLI** (terminal only, with no desktop app or browser needed).
-- **Hide in full screen.** An opt-in toggle tucks the island up into the notch while a full-screen
-  app owns the display, so movies and video stay uninterrupted, then slides it back on exit.
-- **Clawd, the walking crab.** He quickens as you approach a limit and freezes when you're out.
-  Prefer a mono crab or the Claude Spark? Pick your look from the right-click Icon menu. On Codex,
-  the Codex mark floats in his place.
-- **Local-first and private.** Claude Notch reads local provider state and talks only to the
-  corresponding first-party service. Local cost and token figures are clearly labelled `local`.
-- **Zero fuss.** It draws its own notch on non-notch Macs, auto-updates itself, and lives entirely
-  on a right-click menu.
+- 简体中文界面；Claude 和 Codex 展开后均为单页信息布局。
+- 鼠标悬停展开，展开与收起使用平滑位移动画；设置入口为右侧齿轮图标。
+- 多显示器独立显示、独立展开；收起时以小圆点提示工作中、思考中或待确认状态。
+- Claude 默认只读取 Claude Desktop 缓存的官方额度数据，不自动访问钥匙串，避免重复密码弹窗。
+- Claude Pro 会隐藏不适用的 Fable 和可用额度；Max 保留相应能力。
+- Codex 数字和圆环都表示**剩余额度**；支持 7 天额度、重置时间、近期任务与桌面组件。
+- Codex 的“重置”格子结合本地倒计时与第三方已解析的 Tibo 公告信号；它不直接读取 X。
 
-## How it works
+## 安装
 
-Claude Notch reads *your own* local Claude session from **Claude Desktop**, a **browser signed into
-claude.ai** (Chrome, Brave, Edge, Arc, Firefox, Zen), or the **Claude Code CLI**. It calls the same
-usage endpoint the official apps use, and shows the exact limit bars the desktop app does,
-**including Fable's separate weekly limit**.
+从 [Releases](../../releases) 下载 DMG，打开后把 `Claude Notch.app` 拖入“应用程序”。
 
-For Desktop and browsers, the session cookie is read from the local cookie store (Chromium's is
-decrypted with the OS Keychain "Safe Storage" key, the same mechanism the browsers use). For the
-terminal, it reuses the Claude Code CLI's own login token from the Keychain. That read is
-**read-only and never refreshed, so your CLI session is left untouched**. macOS asks your
-permission via a Keychain prompt on first run.
+当前发布包为本机 ad-hoc 签名，尚未经过 Apple 公证。首次打开如被系统拦截，到
+“系统设置 → 隐私与安全性”选择“仍要打开”。
 
-> **Limits vs. local.** The 5-hour, 7-day, and Fable tiles come from Anthropic and cover **all**
-> your usage, including cloud and remote sessions. The `cost today` and `tokens today` figures are
-> computed from your **local** `~/.claude` logs, so they're labelled `local`. Cloud work counts
-> toward the limit bars but not toward the local dollar figure.
+## 数据与隐私
 
-For Codex, Claude Notch starts the installed official `codex app-server` with fixed JSON-RPC
-requests. It does not parse private Codex session logs or estimate dollar costs. Raw prompt previews
-and account email addresses are not displayed or retained. See
-[Provider Architecture](docs/providers.md) for data sources and security boundaries.
+- Claude 默认只读 Claude Desktop 的本地缓存；不读取浏览器或 Claude Code 凭证。只有用户在设置中手动开启“Claude 备用获取”后，才会读取 Claude Desktop 自身的授权信息。
+- Codex 使用官方本地 `codex app-server`；不读取或上传提示词、账号邮箱和登录 token。
+- 重置提醒只请求不带鉴权、不携带用户信息的 `codex-reset.com` 公开 JSON；该网站负责解析 Tibo 的 X 公告。
 
-## Requirements
+## 从源码构建
 
-- macOS 14+ (Apple Silicon or Intel)
-- A signed-in Claude session, an authenticated Codex installation, or both
-
-## Install
-
-**Download:** grab the latest `Claude Notch.zip` from [Releases](../../releases), unzip it, drag
-`Claude Notch.app` to Applications, then **double-click** to open. It's signed and **notarized**, so
-there's no security warning. On first run, **Always Allow** the Keychain prompt so it can read your
-local Claude session. To keep it around, right-click the island and choose *Launch at Login*.
-
-**Build from source:**
+需要 macOS 14+ 与完整 Xcode：
 
 ```bash
-git clone https://github.com/cenzihao1987-svg/claude-notch-zh-cn
+git clone https://github.com/cenzihao1987-svg/claude-notch-zh-cn.git
 cd claude-notch-zh-cn
-swift run ClaudeNotch        # dev run
-bash scripts/make-app.sh     # builds dist/Claude Notch.app + a shareable zip
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+swift test
+swift build -c release
+ALLOW_ADHOC=1 bash scripts/make-app.sh
 ```
 
-Requires a full Xcode toolchain (the SwiftUI macros need it). Run
-`export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` if `swift` points at the
-Command Line Tools.
+`make-app.sh` 会清空并重新生成 `dist/`。没有 Developer ID 证书时，产物仅适合本机测试；对外发布应使用稳定的 Apple Developer ID 签名并完成公证。
 
-## Usage
+## 开源许可证与致谢
 
-- **Click** the % or ring to expand, and **click away** to collapse.
-- **Swipe** left or right (or tap the dots) to switch between the limits page and the detail page.
-- **Tap the sessions block** to flip between today's active sessions and all-time top projects.
-- **Click the left icon** to switch between Claude and Codex.
-- **Right-click** the island for Provider, Icon (Clawd, mono, Spark), Pause, Animate icon, Hide in
-  full screen, Launch at Login, Check for Updates, and Quit.
-
-## Credits
-
-- Clawd crab and Spark animation frames © **Mick Cesanek**
-  ([claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), MIT).
-- Notch shape and Dynamic Island approach inspired by
-  [pookify](https://github.com/eyadhammouda/pookify) (MIT).
-- "Claude" and the spark are trademarks of Anthropic, PBC, used nominatively.
-- "Codex" and the Codex logo are trademarks of OpenAI, used nominatively.
-
-## License
-
-MIT. See [LICENSE](LICENSE). Built with [Claude Code](https://claude.com/claude-code).
+本项目按 [MIT License](LICENSE) 开源。感谢原作者及上游项目的设计、实现与资源。
