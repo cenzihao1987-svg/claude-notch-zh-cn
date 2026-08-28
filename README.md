@@ -2,7 +2,7 @@
 
 # Claude Notch 中文版
 
-**在 Mac 刘海区域查看 Claude 与 Codex 的实时额度、重置时间和近期活动。**
+**在 Mac 刘海查看 Claude 与 Codex 的实时额度，并让任务在两者之间安全接力。**
 
 [![Release](https://img.shields.io/github/v/release/cenzihao1987-svg/claude-notch-zh-cn?color=CC785C&label=下载)](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases/latest)
 &nbsp; ![macOS 14+](https://img.shields.io/badge/macOS-14+-111111?logo=apple&logoColor=white)
@@ -15,15 +15,27 @@
 
 [English README](README.en.md)
 
+## 核心能力：Claude ↔ Codex 可见上下文接力
+
+Claude Notch 不只展示额度。把鼠标移到展开后的“近期任务”上，可以将已停止的任务直接
+**交给 Claude** 或 **交给 Codex**，由另一端继续完成。
+
+- **双向接力**：Codex 任务可交给 Claude Desktop 的 Code 会话，Claude Code 会话也可交给 Codex。
+- **保留可验证现场**：带入任务目标、可见进度、工作目录、工作区、Git 分支与改动摘要、待办事项。
+- **不复制隐藏内容**：思考过程、工具调用与输出、token、Cookie、私钥、`.env` 等敏感信息不会进入交接包。
+- **避免同时改文件**：来源任务工作中或思考中时禁止接力；只有停止、空闲或等待确认时才能手动触发。
+- **失败可恢复**：目标应用或深链打开失败时，交接包仍保留，并自动复制接力指令供手动继续。
+
 ## 最新效果
 
-![Claude Notch v0.4.0：展开后的 Codex 单页额度、近 7 天图表与近期任务](docs/media/claude-notch-v0.4.0.png)
+![Claude Notch：展开后的 Codex 单页额度、近 7 天图表与近期任务](docs/media/claude-notch-v0.4.0.png)
 
-![Claude Notch v0.4.0：18 秒操作演示](docs/media/claude-notch-v0.4.0-demo.gif)
+![Claude Notch：18 秒操作演示](docs/media/claude-notch-v0.4.0-demo.gif)
 
 ## 主要功能
 
-- 简体中文界面；Claude 和 Codex 展开后均为单页信息布局。
+- Claude 与 Codex 双向可见上下文接力，让任务在两个 Agent 之间继续完成。
+- 中文 / English 界面切换；Claude 和 Codex 展开后均为单页信息布局。
 - 鼠标悬停展开，展开与收起使用平滑位移动画；设置入口为右侧齿轮图标。
 - 多显示器独立显示、独立展开；收起时以小圆点提示工作中、思考中或待确认状态。
 - Claude 默认只读取 Claude Desktop 缓存的官方额度数据，不自动访问钥匙串，避免重复密码弹窗。
