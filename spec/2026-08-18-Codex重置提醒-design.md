@@ -1,6 +1,26 @@
 # Codex 重置提醒设计：把「套餐」格子换成「重置」格子
 
 日期：2026-08-18
+
+## 2026-08-24 信源迁移（覆盖下文旧接口约定）
+
+Tibo 信号改用 `https://codex-resets.com/`。网站明确称其为免费公开 API，OpenAPI
+`security` 为空；匿名请求 `GET /api/v1/status` 返回 200，不需要 API Key、Cookie 或登录。
+接口会返回 429 和 `Retry-After`，应用仍需节制请求，不能把“免费”理解成无限调用。
+
+- 唯一接口：`https://codex-resets.com/api/v1/status`，当前响应约 0.7KB。
+- `data.stats.days_since_last` 映射为距上次重置天数。
+- `data.stats.avg_interval_days` 映射为平均重置间隔，文案不得继续写“近期中位数”。
+- `data.active_watch` 是站点的 AI 分类预测，不是 OpenAI 官方承诺。有效时卡片显示
+  “Tibo 信号”和概率；不得写成“确定重置”。点击卡片到网站查看原文和完整上下文。
+- `active_watch.expires_at` 只用于判断观察信号是否仍有效，不得表达成“约 X 后重置”。
+- 数据每 15 分钟最多请求一次；失败后保留上一份好数据并继续退避。仅查看 Codex 卡片时
+  请求，桌面小组件后台刷新不触发第三方 API。
+- 整张 `reset` 卡片可点击，打开 `https://codex-resets.com/`；其他额度、Token 卡片不受影响。
+- 旧域名 `codex-reset.com` 的 `/api/forecast` 和 `/api/timeline` 不再调用。
+
+验证必须覆盖：匿名接口实测、固定 JSON 解码、无 active watch、过期 watch、概率缺失、
+网络失败保留缓存、整卡链接目标、完整测试、release 构建和真实安装版本。
 状态：设计已确认，待实施
 上游版本：`94839a4`（v0.3.2）
 

@@ -42,21 +42,26 @@ final class UsageStore {
         let tokensToday = today.reduce(0) { $0 + $1.totalTokens }
         let costToday = today.reduce(0) { $0 + PricingTable.cost(for: $1) }
 
-        // The active-sessions list: per-conversation spend TODAY (same calendar-day scope as the
-        // "today" tile, so a session never exceeds the day's total). Grouped by sessionId (so
-        // subagents fold into their parent and a mid-session `cd` doesn't split a conversation),
-        // named by the sidebar title, else the project folder.
+        // 近期任务列表：按滚动 24 小时取，不按自然日。
+        // 自然日会让应用连续开着跨过午夜时列表在 00:00 整个清空——刚才还在跑的任务
+        // 只因日期翻页就消失，而这正是最想接着往下干的时候。
+        // 上面的「今日 Token / 花费」保持自然日口径不变，那是用量统计，翻页归零是对的。
+        //
+        // 按 sessionId 归组（子 agent 折进父任务，中途 `cd` 不会把一段对话拆成两条），
+        // 名字取侧边栏标题，取不到就用项目目录名。
+        let recent = events.filter { now.timeIntervalSince($0.timestamp) < 24 * 3_600 }
         var bySession: [String: (cost: Double, tokens: Int, last: Date, cwd: String)] = [:]
-        for e in today {
+        for e in recent {
             var u = bySession[e.sessionId] ?? (0, 0, .distantPast, e.cwd)
             u.cost += PricingTable.cost(for: e)
             u.tokens += e.totalTokens
             if e.timestamp > u.last { u.last = e.timestamp; u.cwd = e.cwd }
             bySession[e.sessionId] = u
         }
-        let projectsToday = bySession.map { sid, v -> ProjectUsage in
+        let recentProjects = bySession.map { sid, v -> ProjectUsage in
             let name = titles[sid] ?? (v.cwd.isEmpty ? "session" : (v.cwd as NSString).lastPathComponent)
-            return ProjectUsage(id: sid, name: name, cost: v.cost, tokens: v.tokens, last: v.last)
+            return ProjectUsage(id: sid, name: name, cost: v.cost, tokens: v.tokens,
+                                last: v.last, cwd: v.cwd)
         }.sorted { $0.last > $1.last }
 
         var byModel: [String: Int] = [:]
@@ -94,7 +99,7 @@ final class UsageStore {
             activeSessionTokens: activeSessionTokens,
             activeSessionCost: activeSessionCost,
             weeklyTokens: weeklyTokens,
-            projectsToday: projectsToday,
+            recentProjects: recentProjects,
             topModel: topModel,
             blockUsageEstimate: estimate)
     }

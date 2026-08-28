@@ -48,6 +48,7 @@ struct UsageSessionMetric: Equatable, Sendable, Identifiable {
     let cost: Double?
     let tokens: Int?
     let last: Date
+    var taskReference: AgentTaskReference? = nil
 }
 
 /// One day of activity for the week chart. `cost` set (Claude's local logs) makes the chart

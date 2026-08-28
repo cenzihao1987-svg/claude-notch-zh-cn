@@ -1,4 +1,5 @@
 import CodexWidgetShared
+import AppKit
 import Foundation
 import OSLog
 import SwiftUI
@@ -18,8 +19,9 @@ final class AppModel {
     private(set) var selectedProvider = UsageProviderID(
         rawValue: UserDefaults.standard.string(forKey: "selectedProvider") ?? ""
     ) ?? .claude
-    /// Projects worked in today with their spend (from the logs), most-recently-active first.
-    var sessionsToday: [ProjectUsage] { snapshot.projectsToday }
+    var language: AppLanguage = .saved
+    /// 近 24 小时动过的任务及其花费（来自日志），最近活跃的排在前面。
+    var recentSessions: [ProjectUsage] { snapshot.recentProjects }
     /// 展开即刷新：折叠态可能刚好停在第 44 秒，展开就是为了看最新的，不该再等一个 tick。
     var isExpanded = false {
         didSet {
@@ -74,6 +76,7 @@ final class AppModel {
     private let resetForecastService = CodexResetForecastService()
     private let lifetimeScanner = LifetimeScanner()
     private let activityReader = AgentActivityReader()
+    private let handoffCoordinator = HandoffCoordinator()
     private var watcher: LogWatcher?
     private var ticker: Timer?
     private var limitsTimer: Timer?
@@ -89,6 +92,11 @@ final class AppModel {
     private var parsedOffsets: [URL: UInt64] = [:]
     /// Conversation titles (sessionId → sidebar name), accumulated as logs are parsed.
     private var titlesBySession: [String: String] = [:]
+    /// Exact Claude JSONL file for each parsed session. Kept while ingesting so rendering the
+    /// recent-session list never has to recursively scan ~/.claude/projects.
+    private var transcriptPathsBySession: [String: String] = [:]
+    private(set) var handoffStates: [String: HandoffStatus] = [:]
+    private var handoffInstructions: [String: String] = [:]
     private var lastReingest = Date.distantPast
 
     // MARK: display values (official account sources only)
@@ -111,9 +119,25 @@ final class AppModel {
     /// True when live limits exist but haven't refreshed recently (fetches failing) — the UI
     /// dims the numbers so a frozen value is never shown as if it were current.
     var isStale: Bool {
-        activeProviderSnapshot.isStale(after: staleAfter)
+        activeProviderSnapshot.isStale(after: Self.claudeUsageFreshAfter)
     }
-    private let staleAfter: TimeInterval = 150   // ~2–3 missed 60s fetches
+    nonisolated static let claudeUsageFreshAfter: TimeInterval = 150
+
+    static func shouldWaitForClaudeDesktopUsage(
+        hasCachedUsage: Bool,
+        cacheIsFresh: Bool,
+        credentialFallbackEnabled: Bool
+    ) -> Bool {
+        hasCachedUsage ? !cacheIsFresh : !credentialFallbackEnabled
+    }
+
+    static func shouldUseClaudeCredentialFallback(
+        hasCachedUsage: Bool,
+        cacheIsFresh: Bool,
+        credentialFallbackEnabled: Bool
+    ) -> Bool {
+        credentialFallbackEnabled && (!hasCachedUsage || !cacheIsFresh)
+    }
 
     /// Estimated time until the 5-hour limit at the current pace (nil if usage isn't trending
     /// up, or if the block resets first). Uses the slope of session % — no token cap needed.
@@ -153,21 +177,29 @@ final class AppModel {
             return Fmt.money(minor: minor, currency: currency)
         }
         if let spend = monthlySpendLabel { return spend }
-        return limits?.creditsPct.map { "已用 " + Fmt.pct($0) } ?? "无"
+        return limits?.creditsPct.map {
+            language.text("已用 ", "Used ") + Fmt.pct($0)
+        } ?? language.text("无", "None")
     }
     /// Subline under the balance: this month's extra-usage spend in absolute money against the
     /// monthly cap. A bare percent read as "percent of my credits" — but it tracks the CAP, so an
     /// emptied balance could sit at "90% used" and look like headroom that isn't there.
     private var creditsSubtitle: String? {
         guard limits?.creditsBalanceMinor != nil else { return nil }
-        return monthlySpendLabel.map { $0 + " / 月" }
-            ?? limits?.creditsPct.map { "已用上限的 " + Fmt.pct($0) }
+        return monthlySpendLabel.map { $0 + language.text(" / 月", " / month") }
+            ?? limits?.creditsPct.map {
+                language.text("已用上限的 ", "Used ") + Fmt.pct($0)
+                    + language.text("", " of limit")
+            }
     }
     /// "€45.21 of €50.00" from the spend block, when the API provides the amounts.
     private var monthlySpendLabel: String? {
         guard let used = limits?.spendUsedMinor, let cap = limits?.spendCapMinor, cap > 0,
               let currency = limits?.spendCurrency else { return nil }
-        return "已用 \(Fmt.money(minor: used, currency: currency)) / 上限 \(Fmt.money(minor: cap, currency: currency))"
+        return language.text(
+            "已用 \(Fmt.money(minor: used, currency: currency)) / 上限 \(Fmt.money(minor: cap, currency: currency))",
+            "Used \(Fmt.money(minor: used, currency: currency)) / \(Fmt.money(minor: cap, currency: currency)) limit"
+        )
     }
 
     var activeProviderSnapshot: ProviderUsageSnapshot {
@@ -181,9 +213,9 @@ final class AppModel {
         let isPro = claudeSubscriptionTier == .pro
         let isMax = claudeSubscriptionTier == .max
         var usageLimits = [
-            UsageLimitMetric(id: "claude-session", label: "5 小时",
+            UsageLimitMetric(id: "claude-session", label: language.text("5 小时", "5 hours"),
                              usedFraction: claudeSessionUsage, resetsAt: sessionResetsAt),
-            UsageLimitMetric(id: "claude-weekly", label: "7 天",
+            UsageLimitMetric(id: "claude-weekly", label: language.text("7 天", "7 days"),
                              usedFraction: weeklyUsage, resetsAt: weeklyResetsAt),
         ]
         if !isPro, fableUsage != nil || isMax {
@@ -193,18 +225,27 @@ final class AppModel {
 
         var stats: [UsageStatMetric] = []
         if !isPro {
-            stats.append(UsageStatMetric(id: "credits", label: "可用额度",
+            stats.append(UsageStatMetric(id: "credits", label: language.text("可用额度", "Available credits"),
                                          value: creditsValue, subtitle: creditsSubtitle))
         }
 
-        var currentSessions = sessionsToday.map {
-            UsageSessionMetric(id: $0.id, name: $0.name, cost: nil,
-                               tokens: $0.tokens, last: $0.last)
+        var currentSessions = recentSessions.map { session in
+            let reference = session.cwd.isEmpty ? nil : AgentTaskReference(
+                provider: .claude,
+                sessionID: session.id,
+                title: session.name,
+                cwd: session.cwd,
+                workspaceRoots: [session.cwd],
+                transcriptPath: transcriptPathsBySession[session.id]
+            )
+            return UsageSessionMetric(id: session.id, name: session.name, cost: nil,
+                                      tokens: session.tokens, last: session.last,
+                                      taskReference: reference)
         }
         if currentSessions.isEmpty, !snapshot.isEmpty {
             currentSessions.append(UsageSessionMetric(
                 id: "claude-active-session",
-                name: "当前会话",
+                name: language.text("当前会话", "Current session"),
                 cost: nil,
                 tokens: snapshot.activeSessionTokens,
                 last: Date()
@@ -220,19 +261,16 @@ final class AppModel {
             dailySeries: claudeDailySeries.map {
                 DailyUsagePoint(date: $0.date, tokens: $0.tokens)
             },
-            chartTitle: "近 7 天 · 本地",
+            chartTitle: language.text("近 7 天 · 本地", "Last 7 days · local"),
             chartOnDetailPage: true,
-            sessionsTitle: "活跃会话",
+            sessionsTitle: language.text("近期任务", "Recent tasks"),
             sessions: currentSessions,
-            alternateSessionsTitle: "累计 · 高频项目",
-            alternateSessions: lifetime.projects.map {
-                UsageSessionMetric(id: $0.id, name: $0.name, cost: nil,
-                                   tokens: $0.tokens, last: $0.last)
-            },
             planName: claudeSubscriptionTier == .pro ? "Claude Pro" : planName,
             source: claudeUsageSource,
             fetchedAt: limits?.fetchedAt ?? statuslineFetchedAt,
-            statusMessage: claudeWaitingForDesktopUsage ? "等待 Claude 客户端更新…" : nil
+            statusMessage: claudeWaitingForDesktopUsage
+                ? language.text("等待 Claude 客户端更新…", "Waiting for Claude to update…")
+                : nil
         )
     }
 
@@ -241,6 +279,9 @@ final class AppModel {
     private var configURL: URL { home.appendingPathComponent(".claude.json") }
 
     func start() {
+        CodexWidgetSnapshotStore.saveLanguage(
+            language == .english ? .english : .chinese
+        )
         readPlanLimits()
         watcher = LogWatcher { [weak self] urls in
             guard let self, !self.isPaused else { return }
@@ -283,6 +324,96 @@ final class AppModel {
         guard !isPaused else { return .idle }
         let running = provider == .claude ? claudeRunning : codexRunning
         return running ? (activityStates[provider] ?? .idle) : .idle
+    }
+
+    func canHandoff(_ task: AgentTaskReference) -> Bool {
+        if case .preparing? = handoffStates[task.id] { return false }
+        // 不看 isPaused：守卫是按需 stat 一次文件，不依赖轮询，暂停刷新也照样准。
+        return !HandoffActivityGuard.isBusy(task)
+    }
+
+    func handoffHelp(_ task: AgentTaskReference) -> String {
+        guard canHandoff(task) else {
+            return language.text("先停止当前任务再接力", "Stop the current task before handing off")
+        }
+        return task.destination == .claude
+            ? language.text("交给 Claude 桌面端", "Hand off to Claude Desktop")
+            : language.text("交给 Codex", "Hand off to Codex")
+    }
+
+    func handoffLabel(_ task: AgentTaskReference) -> String {
+        if task.destination == .claude {
+            return language.text("交给 Claude", "To Claude")
+        }
+        return language.text("交给 Codex", "To Codex")
+    }
+
+    func handoff(_ task: AgentTaskReference) {
+        guard canHandoff(task) else { return }
+        let awaitingConfirmation = handoffActivityState(for: task.provider) == .awaitingConfirmation
+        handoffStates[task.id] = .preparing
+        Task { [handoffCoordinator] in
+            let result = await handoffCoordinator.handoff(
+                task: task,
+                to: task.destination,
+                awaitingConfirmation: awaitingConfirmation
+            )
+            switch result {
+            case let .opened(destination, _, instruction):
+                self.handoffInstructions[task.id] = instruction
+                let name = destination == .claude
+                    ? self.language.text("Claude 桌面端", "Claude Desktop")
+                    : "Codex"
+                self.settle(task.id, .opened(
+                    self.language.text("已交给 \(name)", "Handed off to \(name)")
+                ))
+            case let .fallback(_, _, instruction, reason):
+                self.handoffInstructions[task.id] = instruction
+                self.settle(task.id, .fallback(reason))
+            case let .failed(_, instruction, reason):
+                self.handoffInstructions[task.id] = instruction
+                self.settle(task.id, .failed(reason))
+            }
+        }
+    }
+
+    /// 结果只显示一会儿，然后让位给接力按钮。
+    /// 状态一直挂着的话，这一行就再也交接不了第二次了——它把按钮的位置永久占住。
+    private func settle(_ taskID: String, _ status: HandoffStatus) {
+        handoffStates[taskID] = status
+        Task {
+            try? await Task.sleep(for: Self.linger(for: status))
+            // 期间如果又点了一次、状态已经变了，就别把新状态抹掉。
+            guard self.handoffStates[taskID] == status else { return }
+            self.handoffStates[taskID] = nil
+        }
+    }
+
+    /// 成功了没什么可做的，早点把按钮还回来；
+    /// 失败或降级要留时间让人看清，还要够悬停过去点「复制交接指令」。
+    private static func linger(for status: HandoffStatus) -> Duration {
+        if case .opened = status { return .seconds(5) }
+        return .seconds(20)
+    }
+
+    func canCopyHandoffInstruction(_ task: AgentTaskReference) -> Bool {
+        handoffInstructions[task.id] != nil
+    }
+
+    func copyHandoffInstruction(_ task: AgentTaskReference) {
+        guard let instruction = handoffInstructions[task.id] else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(instruction, forType: .string)
+        settle(task.id, .fallback(
+            language.text("交接指令已复制", "Handoff instructions copied")
+        ))
+    }
+
+    /// 只用来判断「有没有待回答的确认」，好把它写进交接包。
+    /// 能不能接力由 `HandoffActivityGuard` 按任务自己的记录判断，不看这里。
+    private func handoffActivityState(for provider: UsageProviderID) -> AgentActivityState {
+        guard !isPaused else { return .idle }
+        return activityStates[provider] ?? .idle
     }
 
     private func refreshActivityStates() {
@@ -345,6 +476,15 @@ final class AppModel {
     }
     func cycleAvatar() { setAvatar(avatarStyle.next) }
     func setAvatar(_ s: AvatarStyle) { avatarStyle = s; AvatarStyle.selected = s }
+    func setLanguage(_ newLanguage: AppLanguage) {
+        guard newLanguage != language else { return }
+        language = newLanguage
+        newLanguage.save()
+        CodexWidgetSnapshotStore.saveLanguage(
+            newLanguage == .english ? .english : .chinese
+        )
+        WidgetCenter.shared.reloadAllTimelines()
+    }
     func toggleAnimateIcon() {
         animateIcon.toggle()
         UserDefaults.standard.set(animateIcon, forKey: "animateIcon")
@@ -423,8 +563,8 @@ final class AppModel {
     ///
     /// 节流放在这里而不是 tickLimits 里，因为定时器只是三个入口之一：展开、前台跟随切换
     /// 也都会立刻调它。切窗口比 tick 频繁得多，只拦定时器等于没拦。
-    /// `force` 只给菜单里的「立即刷新」用：新鲜 Desktop 缓存仍优先；只有缓存不可用或
-    /// 过期时，用户主动刷新才穿透网络节流与退避。
+    /// `force` 只给菜单里的「立即刷新」用：新鲜 Desktop 缓存仍优先；缓存不可用或
+    /// 过期时才进入网络兜底，自动刷新仍受网络节流与退避保护。
     func fetchLimits(force: Bool = false) {
         guard !isPaused, selectedProvider == .claude else { return }
         // 本地缓存读取也共用 in-flight：避免 30 秒 tick、展开与前台切换同时扫描同一个文件。
@@ -437,30 +577,36 @@ final class AppModel {
                 self.claudeSubscriptionTier = tier
             }
 
-            // Claude Desktop 已经请求并缓存的官方响应优先。5 分钟内视为新鲜：不再重复请求
+            // Claude Desktop 已经请求并缓存的官方响应优先。150 秒内视为新鲜：不再重复请求
             // 同一个接口，也不触碰 token/Cookie/Keychain。仍在当前额度周期内的旧值继续显示并
-            // 标为 stale；自动刷新等待 Desktop 写入新缓存，只有用户手动刷新才穿透到网络源。
+            // 标为 stale；若已开启凭据兜底，则继续进入受节流与退避保护的网络源。
             if let cached = await desktopUsageCache.latest() {
                 if let reset = cached.sessionResetsAt, reset <= Date() {
                     self.discardExpiredDesktopCachedUsage()
                 } else {
                     self.applyDesktopCachedUsage(cached)
-                    let isFresh = cached.isFresh(after: 300)
-                    self.claudeWaitingForDesktopUsage =
-                        !isFresh && !self.claudeCredentialFallbackEnabled
-                    if !force || isFresh {
+                    let isFresh = cached.isFresh(after: Self.claudeUsageFreshAfter)
+                    self.claudeWaitingForDesktopUsage = Self.shouldWaitForClaudeDesktopUsage(
+                        hasCachedUsage: true,
+                        cacheIsFresh: isFresh,
+                        credentialFallbackEnabled: self.claudeCredentialFallbackEnabled
+                    )
+                    if isFresh {
                         self.claudeFailures = 0
                         return
                     }
                 }
             }
 
-            guard self.claudeCredentialFallbackEnabled else {
+            guard Self.shouldUseClaudeCredentialFallback(
+                hasCachedUsage: self.limits != nil,
+                cacheIsFresh: false,
+                credentialFallbackEnabled: self.claudeCredentialFallbackEnabled
+            ) else {
                 self.claudeWaitingForDesktopUsage = true
                 self.claudeFailures = 0
                 return
             }
-            self.claudeWaitingForDesktopUsage = false
 
             let gap = self.claudeAttemptedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             guard force || gap >= self.claudeMinGap else { return }
@@ -477,6 +623,7 @@ final class AppModel {
                 return
             }
             self.applyLimits(l)
+            self.claudeWaitingForDesktopUsage = false
             self.claudeFailures = 0
         }
     }
@@ -514,7 +661,7 @@ final class AppModel {
         // 只在真正在看 Codex 卡片时才碰外部站点。桌面小组件那条每 15 分钟的后台刷新
         // （includeWhenInactive: true）只需要 7 天额度，不该为它发第三方请求。
         if selectedProvider == .codex {
-            // 发出去就不管：codex-reset.com 慢 15 秒，也不该让刘海的数字晚 15 秒。
+            // 发出去就不管：codex-resets.com 慢 15 秒，也不该让刘海的数字晚 15 秒。
             // 拉到的值落进 actor 缓存，下面这次刷新用的是上一份。真拿到新值时
             // refreshIfStale 返回 true，再触发一次刷新把新值画上去。
             Task { [resetForecastService] in
@@ -572,6 +719,9 @@ final class AppModel {
             else { store.append(fileURL: r.url, events: r.events) }
             parsedOffsets[r.url] = r.newOffset
             for (sid, title) in r.titles { titlesBySession[sid] = title }
+            for sessionID in Set(r.events.map(\.sessionId)) {
+                transcriptPathsBySession[sessionID] = r.url.path
+            }
         }
         for url in files { parsedMTimes[url] = Self.mtime(url) }
         refresh()

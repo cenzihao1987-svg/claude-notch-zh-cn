@@ -78,9 +78,12 @@ private struct DesktopCodexWidgetView: View {
     let model: AppModel
 
     var body: some View {
-        CodexQuotaCard(snapshot: model.codexWidgetSnapshot)
-            .frame(width: 364, height: 170)
-            .contentShape(Rectangle())
-            .environment(\.colorScheme, .dark)
+        CodexQuotaCard(
+            snapshot: model.codexWidgetSnapshot,
+            language: model.language == .english ? .english : .chinese
+        )
+        .frame(width: 364, height: 170)
+        .contentShape(Rectangle())
+        .environment(\.colorScheme, .dark)
     }
 }

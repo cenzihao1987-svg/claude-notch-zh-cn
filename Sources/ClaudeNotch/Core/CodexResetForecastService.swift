@@ -1,14 +1,13 @@
 import Foundation
 import os
 
-/// 读 codex-reset.com 的公开接口。不带任何凭据，取的就是那个网站自己渲染用的匿名 JSON。
-/// 两个端点合计约 42KB，一天最多拉 4 次。
+/// 读 codex-resets.com 的免费公开接口。不带任何凭据，只取网站公开的只读 JSON。
 actor CodexResetForecastService {
     private static let log = Logger(subsystem: "com.claudenotch.app", category: "reset")
 
-    /// Tibo 的预告提前量是 30–60 分钟，重置集中在 UTC 的一个 3 小时窗口里，
-    /// 这里没有任何东西会在几小时内变化。6 小时把请求量压到一天 4 次以内。
-    private static let staleAfter: TimeInterval = 6 * 3_600
+    /// API 自带 30 秒缓存；应用只在查看 Codex 时请求。15 分钟足以覆盖短时观察信号，
+    /// 同时把匿名免费接口的调用量控制在每天最多 96 次。
+    private static let staleAfter: TimeInterval = 15 * 60
     /// 失败后的重试间隔。没有它，断网时展开态每 30 秒就会重试一次。
     private static let retryAfterFailure: TimeInterval = 15 * 60
 
@@ -41,63 +40,37 @@ actor CodexResetForecastService {
         guard fresh != cached else { return false }
         cached = fresh
         // 单行字符串：os.Logger 的 OSLogMessage 对多行字面量支持不稳，不要拆行。
-        Self.log.notice("reset forecast updated: age=\(fresh.ageDays ?? -1, privacy: .public)d odds24h=\(fresh.probability24h ?? -1, privacy: .public) odds48h=\(fresh.probability48h ?? -1, privacy: .public) window=\(fresh.officialWindowLabel ?? "none", privacy: .public)")
+        Self.log.notice("reset forecast updated: age=\(fresh.ageDays ?? -1, privacy: .public)d average=\(fresh.averageIntervalDays ?? -1, privacy: .public)d watch=\(fresh.watchChancePercent ?? -1, privacy: .public)")
         return true
     }
 
     // MARK: - 取数
 
     private static func load() async -> CodexResetForecast? {
-        async let forecastTask = get(ForecastPayload.self, "https://codex-reset.com/api/forecast")
-        async let timelineTask = get(TimelinePayload.self, "https://codex-reset.com/api/timeline")
-        let (forecast, timeline) = await (forecastTask, timelineTask)
-
-        // 只要有一半拿到就算成功：forecast 挂了还能显示预告，timeline 挂了还能显示节奏。
-        guard forecast != nil || timeline != nil else { return nil }
-
-        var result = CodexResetForecast(
-            ageDays: forecast?.ageDays,
-            recentMedianDays: forecast?.cadence?.recentMedianDays,
-            officialWindowLabel: nil,
-            officialWindowEnd: nil,
-            probability24h: forecast?.probabilities?.rounded24H,
-            probability48h: forecast?.probabilities?.rounded48H
-        )
-        // 这里必须用 if let 而不是 `window?.label`：label 本身是 String?，
-        // 再走一层可选链就成了 String??，赋不进 officialWindowLabel。
-        if let window = timeline.flatMap(liveWindow) {
-            result.officialWindowLabel = window.label
-            result.officialWindowEnd = window.end
-        }
-        return result
+        guard let data = await get(CodexResetSource.statusEndpointURL) else { return nil }
+        return decodeStatus(data)
     }
 
-    /// 尚未关闭的预告里，结束最早的那一条。
-    private static func liveWindow(_ timeline: TimelinePayload) -> (label: String?, end: Date)? {
-        let now = Date()
-        return timeline.events
-            .compactMap { event -> (label: String?, end: Date)? in
-                guard let window = event.officialWindow,
-                      let raw = window.endAt,
-                      let end = parseISO(raw),
-                      end > now
-                else { return nil }
-                return (window.label, end)
-            }
-            .min { $0.end < $1.end }
-    }
-
-    private static func get<T: Decodable>(_ type: T.Type, _ urlString: String) async -> T? {
-        guard let url = URL(string: urlString) else { return nil }
+    private static func get(_ url: URL) async -> Data? {
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("ClaudeNotch", forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200
         else { return nil }
+        return data
+    }
+
+    nonisolated static func decodeStatus(_ data: Data) -> CodexResetForecast? {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try? decoder.decode(type, from: data)
+        guard let payload = try? decoder.decode(StatusPayload.self, from: data) else { return nil }
+        return CodexResetForecast(
+            ageDays: payload.data.stats.daysSinceLast,
+            averageIntervalDays: payload.data.stats.avgIntervalDays,
+            watchChancePercent: payload.data.activeWatch?.resetChancePercent,
+            watchExpiresAt: payload.data.activeWatch.flatMap { parseISO($0.expiresAt) }
+        )
     }
 
     /// end_at 形如 "2026-08-13T02:01:37.000Z"，少数早期记录没有小数秒。
@@ -111,30 +84,19 @@ actor CodexResetForecastService {
     // MARK: - JSON 结构
     // 只声明用得到的字段。多余的键 JSONDecoder 默认忽略，对方加字段不会把我们打挂。
 
-    private struct ForecastPayload: Decodable {
-        struct Cadence: Decodable {
-            let recentMedianDays: Double?
-        }
-        struct Probabilities: Decodable {
-            // 注意大写的 H。decoder 开了 convertFromSnakeCase，它把 "rounded_24h"
-            // 转成 "rounded24H" —— 数字后面那个字母会被当成新词首字母大写。
-            // 写成 rounded24h 不会报错，只会静默解析成 nil，格子永远不显示。
-            let rounded24H: Int?
-            let rounded48H: Int?
-        }
-        let ageDays: Double?
-        let cadence: Cadence?
-        let probabilities: Probabilities?
-    }
-
-    private struct TimelinePayload: Decodable {
-        struct Event: Decodable {
-            struct Window: Decodable {
-                let label: String?
-                let endAt: String?
+    private struct StatusPayload: Decodable {
+        struct PayloadData: Decodable {
+            struct Stats: Decodable {
+                let daysSinceLast: Double?
+                let avgIntervalDays: Double?
             }
-            let officialWindow: Window?
+            struct Watch: Decodable {
+                let resetChancePercent: Int?
+                let expiresAt: String
+            }
+            let activeWatch: Watch?
+            let stats: Stats
         }
-        let events: [Event]
+        let data: PayloadData
     }
 }

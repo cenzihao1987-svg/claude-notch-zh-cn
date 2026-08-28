@@ -1,5 +1,10 @@
 import Foundation
 
+public enum CodexWidgetLanguage: String, Codable, Sendable {
+    case chinese = "zh-Hans"
+    case english = "en"
+}
+
 public struct CodexWidgetSnapshot: Codable, Equatable, Sendable {
     public let remainingFraction: Double
     public let resetsAt: Date?
@@ -23,6 +28,7 @@ public struct CodexWidgetSnapshot: Codable, Equatable, Sendable {
 public enum CodexWidgetSnapshotStore {
     public static let suiteName = "group.com.claudenotch.app"
     private static let snapshotKey = "codex-weekly-snapshot"
+    private static let languageKey = "app-language"
 
     public static func save(_ snapshot: CodexWidgetSnapshot) {
         guard let data = try? JSONEncoder().encode(snapshot),
@@ -36,5 +42,15 @@ public enum CodexWidgetSnapshotStore {
               let data = defaults.data(forKey: snapshotKey)
         else { return nil }
         return try? JSONDecoder().decode(CodexWidgetSnapshot.self, from: data)
+    }
+
+    public static func saveLanguage(_ language: CodexWidgetLanguage) {
+        UserDefaults(suiteName: suiteName)?.set(language.rawValue, forKey: languageKey)
+    }
+
+    public static func loadLanguage() -> CodexWidgetLanguage {
+        guard let rawValue = UserDefaults(suiteName: suiteName)?.string(forKey: languageKey)
+        else { return .chinese }
+        return CodexWidgetLanguage(rawValue: rawValue) ?? .chinese
     }
 }

@@ -3,6 +3,27 @@ import Testing
 @testable import ClaudeNotch
 
 @Suite struct CodexSnapshotMapperTests {
+    @MainActor @Test func codexDashboardKeepsOnlyTwoByTwoSummaryTiles() {
+        let snapshot = ProviderUsageSnapshot(
+            provider: .codex,
+            limits: [
+                .init(id: "codex-primary", label: "Codex · 5-Hour", usedFraction: 0.1, resetsAt: nil),
+                .init(id: "codex-secondary", label: "Codex · 7-Day", usedFraction: 0.2, resetsAt: nil),
+                .init(id: "gpt-reserve-secondary", label: "GPT reserve · 7-Day", usedFraction: 0.3, resetsAt: nil),
+            ],
+            stats: [
+                .init(id: "tokens-yesterday", label: "yesterday", value: "12.2M", subtitle: nil),
+                .init(id: "credits", label: "credits", value: "500", subtitle: nil),
+                .init(id: "reset", label: "reset", value: "0.8 days", subtitle: nil),
+            ]
+        )
+
+        #expect(IslandView.singlePageLimits(for: snapshot).map(\.id) == [
+            "codex-primary", "codex-secondary",
+        ])
+        #expect(IslandView.singlePageStats(for: snapshot).map(\.id) == ["credits", "reset"])
+    }
+
     @Test func liveAppServerExchangeWhenRequested() async {
         guard ProcessInfo.processInfo.environment["CODEX_NOTCH_RUN_INTEGRATION_TEST"] == "1" else {
             return
@@ -13,6 +34,10 @@ import Testing
         #expect(snapshot.source == "Codex app-server")
         #expect(!snapshot.limits.isEmpty)
         #expect(snapshot.lifetimeTokens != nil)
+        if ProcessInfo.processInfo.environment["CODEX_NOTCH_EXPECT_THREAD_USAGE"] == "1",
+           !snapshot.sessions.isEmpty {
+            #expect(snapshot.sessions.contains { ($0.tokens ?? 0) > 0 })
+        }
     }
 
     @Test func mapsOfficialAppServerPayloads() throws {
@@ -52,6 +77,34 @@ import Testing
           }]
         }
         """)
+        let threadUsage = try decode(CodexThreadUsageResponse.self, json: """
+        {
+          "summary": {},
+          "threadUsage": {
+            "threadId": "thread-1",
+            "estimatedUsageCreditsMicros": 123,
+            "estimatedUsageUsdMicros": 12,
+            "groups": [
+              {
+                "model": "gpt-5.6",
+                "totalTokens": 120000,
+                "inputTokens": 118000,
+                "cachedInputTokens": 100000,
+                "outputTokens": 2000,
+                "estimatedUsageCreditsMicros": 100
+              },
+              {
+                "model": "gpt-5.5",
+                "totalTokens": 6020,
+                "inputTokens": 6000,
+                "cachedInputTokens": 5000,
+                "outputTokens": 20,
+                "estimatedUsageCreditsMicros": 23
+              }
+            ]
+          }
+        }
+        """)
         let now = try #require(Calendar.current.date(from: DateComponents(
             year: 2026, month: 7, day: 20, hour: 12
         )))
@@ -61,6 +114,7 @@ import Testing
             rateLimits: rateLimits,
             usage: usage,
             threads: threads,
+            threadTokens: ["thread-1": try #require(threadUsage.threadUsage?.totalTokens)],
             now: now
         )
 
@@ -72,6 +126,7 @@ import Testing
         #expect(snapshot.planName == "Codex Plus")
         #expect(snapshot.stats.first(where: { $0.id == "credits" })?.value == "12.50")
         #expect(snapshot.sessions.first?.name == "Provider abstraction")
+        #expect(snapshot.sessions.first?.tokens == 126_020)
         #expect(snapshot.statusMessage == nil)
     }
 
@@ -241,6 +296,30 @@ import Testing
         #expect(snapshot.dailySeries.isEmpty)   // no usage feed: UI falls back to the tile grid
     }
 
+    @Test func keepsZeroYesterdayTokenTileToFillSummaryGrid() throws {
+        let now = Date()
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        let twoDaysAgo = Calendar.current.date(byAdding: .day, value: -2, to: now)!
+        let usage = try decode(CodexAccountUsageResponse.self, json: """
+        {
+          "summary": {"lifetimeTokens": 100},
+          "dailyUsageBuckets": [
+            {"startDate": "\(formatter.string(from: twoDaysAgo))", "tokens": 100}
+          ]
+        }
+        """)
+
+        let snapshot = CodexSnapshotMapper.make(
+            account: nil, rateLimits: nil, usage: usage, threads: nil, now: now
+        )
+
+        #expect(snapshot.stats.first(where: { $0.id == "tokens-yesterday" })?.value == "0")
+    }
+
     @Test func explainsMissingUsageForAPIKeyAuth() throws {
         let account = try decode(CodexAccountResponse.self, json: """
         {
@@ -286,6 +365,17 @@ import Testing
 
         #expect(snapshot.sessions.first?.name == "notch")
         #expect(snapshot.sessions.first?.name != "Confidential prompt content")
+        #expect(snapshot.sessions.first?.tokens == nil)
+    }
+
+    @Test func readsLatestCumulativeTokenCountWithoutUsingPromptContent() {
+        let data = Data("""
+        {"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":1200}}}}
+        {"type":"response_item","payload":{"type":"message","content":"private prompt"}}
+        {"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":3456}}}}
+        """.utf8)
+
+        #expect(CodexThreadTokenReader.totalTokens(in: data) == 3_456)
     }
 
     private func decode<T: Decodable>(_ type: T.Type, json: String) throws -> T {

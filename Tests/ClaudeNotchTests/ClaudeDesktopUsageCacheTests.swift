@@ -4,6 +4,16 @@ import Testing
 
 @Suite("Claude Desktop usage cache")
 struct ClaudeDesktopUsageCacheTests {
+    @Test func liveDesktopCacheWhenRequested() async throws {
+        guard ProcessInfo.processInfo.environment["CLAUDE_NOTCH_RUN_CACHE_INTEGRATION_TEST"] == "1"
+        else { return }
+
+        let result = try #require(await ClaudeDesktopUsageCache().latest())
+        let age = Date().timeIntervalSince(result.fetchedAt)
+        print("Claude Desktop usage cache age: \(Int(age))s")
+        #expect(result.sessionPct != nil || result.weeklyPct != nil)
+    }
+
     @Test func parsesOfficialUsageResponse() throws {
         let data = Data(#"""
         {
@@ -36,6 +46,19 @@ struct ClaudeDesktopUsageCacheTests {
             fetchedAt: Date(timeIntervalSince1970: 90)
         )
         #expect(!usage.isFresh(now: Date(timeIntervalSince1970: 101), after: 300))
+    }
+
+    @Test func cacheOlderThanDisplayFreshnessIsNotFresh() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let usage = ClaudeDesktopCachedUsage(
+            sessionPct: 0.92,
+            sessionResetsAt: Date(timeIntervalSince1970: 2_000),
+            weeklyPct: 0.21,
+            weeklyResetsAt: nil,
+            fetchedAt: now.addingTimeInterval(-AppModel.claudeUsageFreshAfter - 1)
+        )
+
+        #expect(!usage.isFresh(now: now, after: AppModel.claudeUsageFreshAfter))
     }
 
     @Test func recognizesProCapability() {

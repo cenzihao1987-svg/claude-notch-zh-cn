@@ -1,5 +1,9 @@
 import Foundation
 
+private enum CodexRequestID {
+    static let firstThreadUsage = 100
+}
+
 actor CodexUsageProvider {
     private let transport = CodexAppServerTransport()
     /// The transport blocks on pipe reads behind NSCondition waits (worst case ~20s of timeouts),
@@ -26,6 +30,17 @@ actor CodexUsageProvider {
             let rateLimits = exchange.decode(CodexRateLimitsResponse.self, id: 3)
             let usage = exchange.decode(CodexAccountUsageResponse.self, id: 4)
             let threads = exchange.decode(CodexThreadListResponse.self, id: 5)
+            let threadTokens = Dictionary(uniqueKeysWithValues:
+                (threads?.data.prefix(3).enumerated().compactMap { index, thread in
+                    let response = exchange.decode(
+                        CodexThreadUsageResponse.self,
+                        id: CodexRequestID.firstThreadUsage + index
+                    )
+                    let total = response?.threadUsage?.totalTokens
+                        ?? CodexThreadTokenReader.totalTokens(at: thread.path)
+                    return total.map { (thread.id, $0) }
+                } ?? [])
+            )
             // A result that arrived but no longer decodes means the app-server's schema moved.
             // Surface that instead of silently dropping tiles, so a future Codex update shows a
             // status line rather than a mysteriously empty island.
@@ -42,6 +57,7 @@ actor CodexUsageProvider {
                 rateLimits: rateLimits,
                 usage: usage,
                 threads: threads,
+                threadTokens: threadTokens,
                 errors: errors,
                 forecast: forecast,
                 now: Date()
@@ -112,10 +128,67 @@ struct CodexThreadListResponse: Decodable, Sendable {
         let id: String
         let cwd: String
         let name: String?
+        let path: String?
         let updatedAt: Int
     }
 
     let data: [Thread]
+}
+
+struct CodexThreadUsageResponse: Decodable, Sendable {
+    struct ThreadUsage: Decodable, Sendable {
+        struct Group: Decodable, Sendable {
+            let totalTokens: Int?
+        }
+
+        let threadId: String
+        let groups: [Group]
+
+        var totalTokens: Int? {
+            let totals = groups.compactMap(\.totalTokens)
+            return totals.isEmpty ? nil : totals.reduce(0, +)
+        }
+    }
+
+    let threadUsage: ThreadUsage?
+}
+
+enum CodexThreadTokenReader {
+    private static let maximumTailBytes: UInt64 = 2 * 1_024 * 1_024
+
+    static func totalTokens(at path: String?) -> Int? {
+        guard let path, path.hasSuffix(".jsonl"), isInsideCodexDataDirectory(path),
+              let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        do {
+            let size = try handle.seekToEnd()
+            try handle.seek(toOffset: size > maximumTailBytes ? size - maximumTailBytes : 0)
+            return totalTokens(in: try handle.readToEnd() ?? Data())
+        } catch {
+            return nil
+        }
+    }
+
+    static func totalTokens(in data: Data) -> Int? {
+        for line in data.split(separator: 0x0A).reversed() {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                  object["type"] as? String == "event_msg",
+                  let payload = object["payload"] as? [String: Any],
+                  payload["type"] as? String == "token_count",
+                  let info = payload["info"] as? [String: Any],
+                  let usage = info["total_token_usage"] as? [String: Any],
+                  let tokens = (usage["total_tokens"] as? NSNumber)?.intValue else { continue }
+            return tokens
+        }
+        return nil
+    }
+
+    private static func isInsideCodexDataDirectory(_ path: String) -> Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let resolved = URL(fileURLWithPath: path).standardizedFileURL.path
+        return resolved.hasPrefix(home + "/.codex/sessions/")
+            || resolved.hasPrefix(home + "/.codex/archived_sessions/")
+    }
 }
 
 enum CodexSnapshotMapper {
@@ -124,6 +197,7 @@ enum CodexSnapshotMapper {
         rateLimits: CodexRateLimitsResponse?,
         usage: CodexAccountUsageResponse?,
         threads: CodexThreadListResponse?,
+        threadTokens: [String: Int] = [:],
         errors: [Int: String] = [:],
         forecast: CodexResetForecast? = nil,
         now: Date
@@ -150,9 +224,9 @@ enum CodexSnapshotMapper {
         if let credits {
             stats.append(.init(id: "credits", label: "credits", value: credits, subtitle: nil))
         }
-        // The account feed often posts today's bucket late; yesterday is the freshest number
-        // that's reliably there, so it fills the slot until today's figure exists.
-        if series.count == 7, let yesterday = series.dropLast().last, yesterday.tokens > 0 {
+        // The account feed often posts today's bucket late; keep yesterday even when it is zero,
+        // otherwise the fixed summary grid leaves a conspicuous empty card slot.
+        if series.count == 7, let yesterday = series.dropLast().last {
             stats.append(.init(id: "tokens-yesterday", label: "yesterday · account",
                                value: Fmt.tokens(yesterday.tokens), subtitle: nil))
         }
@@ -172,13 +246,22 @@ enum CodexSnapshotMapper {
                                value: turnLabel(turn), subtitle: nil))
         }
 
-        let sessions = threads?.data.prefix(3).map { thread in
-            UsageSessionMetric(
+        let sessions: [UsageSessionMetric] = threads?.data.prefix(3).map { thread in
+            let title = threadName(thread)
+            return UsageSessionMetric(
                 id: thread.id,
-                name: threadName(thread),
+                name: title,
                 cost: nil,
-                tokens: nil,
-                last: Date(timeIntervalSince1970: TimeInterval(thread.updatedAt))
+                tokens: threadTokens[thread.id],
+                last: Date(timeIntervalSince1970: TimeInterval(thread.updatedAt)),
+                taskReference: AgentTaskReference(
+                    provider: .codex,
+                    sessionID: thread.id,
+                    title: title,
+                    cwd: thread.cwd,
+                    workspaceRoots: [thread.cwd],
+                    transcriptPath: thread.path
+                )
             )
         } ?? []
 
@@ -437,6 +520,26 @@ private struct CodexAppServerTransport: Sendable {
                 "sortDirection": "desc",
             ], to: input.fileHandleForWriting)
             try collector.wait(for: [2, 3, 4, 5], timeout: 12)
+
+            let threads = collector.exchange.decode(CodexThreadListResponse.self, id: 5)
+            let recentThreads = threads.map { Array($0.data.prefix(3)) } ?? []
+            let requests = recentThreads.enumerated().map {
+                index, thread in
+                (id: CodexRequestID.firstThreadUsage + index, threadID: thread.id)
+            }
+            for request in requests {
+                try sendRequest(
+                    id: request.id,
+                    method: "account/usage/read",
+                    params: ["threadId": request.threadID],
+                    to: input.fileHandleForWriting
+                )
+            }
+            if !requests.isEmpty {
+                // Per-task usage is optional. Older app-server builds may not expose it, and a
+                // slow response must not hide the account limits that already arrived.
+                try? collector.wait(for: Set(requests.map(\.id)), timeout: 5)
+            }
         } catch {
             cleanup(process: process, input: input, output: output)
             if let providerError = error as? CodexProviderError { throw providerError }

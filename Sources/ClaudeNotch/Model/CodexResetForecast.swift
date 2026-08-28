@@ -1,20 +1,21 @@
 import Foundation
 
-/// codex-reset.com 提供的非敏感事实。每个字段都可选：接口随时可能少给一项，
+enum CodexResetSource {
+    static let websiteURL = URL(string: "https://codex-resets.com/")!
+    static let statusEndpointURL = URL(string: "https://codex-resets.com/api/v1/status")!
+}
+
+/// codex-resets.com 提供的非敏感事实。每个字段都可选：接口随时可能少给一项，
 /// 少一项只应该让格子少一行，不应该让整个格子消失。
 struct CodexResetForecast: Equatable, Sendable {
-    /// 距上次确认重置的天数，一位小数。来自 `/api/forecast` 的 `age_days`。
+    /// 距上次确认重置的天数。来自 `/api/v1/status` 的 `stats.days_since_last`。
     var ageDays: Double?
-    /// 近期几次重置的间隔中位数。来自 `/api/forecast` 的 `cadence.recent_median_days`。
-    var recentMedianDays: Double?
-    /// Tibo 原话被解析出的英文窗口措辞，例如 "within an hour"。
-    var officialWindowLabel: String?
-    /// 那个窗口的结束时刻。既用来判断预告是否过期，也用来算倒计时。
-    var officialWindowEnd: Date?
-    /// 未来 24 小时内发生重置的概率，整数百分比。来自 `probabilities.rounded_24h`。
-    var probability24h: Int?
-    /// 未来 48 小时内的同一个数。
-    var probability48h: Int?
+    /// 全部重置历史的平均间隔。来自 `stats.avg_interval_days`。
+    var averageIntervalDays: Double?
+    /// 站点 AI 分类出的活动观察信号概率；不是 OpenAI 官方承诺。
+    var watchChancePercent: Int?
+    /// 观察信号的过期时间，只用于判断信号是否仍有效。
+    var watchExpiresAt: Date?
 }
 
 /// 决定「重置」格子显示什么。
@@ -33,8 +34,7 @@ enum CodexResetTile {
         now: Date
     ) -> UsageStatMetric {
         imminentLocalReset(limits, now: now)
-            ?? announcedWindow(forecast, now: now)
-            ?? resetOdds(forecast)
+            ?? watchSignal(forecast, now: now)
             ?? cadenceFacts(forecast)
             ?? UsageStatMetric(id: "reset", label: "重置", value: "—", subtitle: nil)
     }
@@ -85,75 +85,24 @@ enum CodexResetTile {
         }
     }
 
-    // MARK: - 优先级 2：Tibo 预告
+    // MARK: - 优先级 2：Tibo 信号
 
-    /// 过期判断放在渲染时再做一次（而不是只在取数时做）：缓存值可能已经躺了 6 小时，
-    /// 那时窗口早就关了。宁可降级到优先级 3，也不能显示一个已经作废的预告。
-    private static func announcedWindow(
+    /// `active_watch` 是站点的 AI 分类预测，不是官方承诺。过期判断在渲染时再做一次，
+    /// 避免缓存值已经失效时仍显示信号。详情交给可点击的网站卡片承载。
+    private static func watchSignal(
         _ forecast: CodexResetForecast?,
         now: Date
     ) -> UsageStatMetric? {
-        // 先解包整个 forecast 再取字段。写成 `forecast?.officialWindowLabel` 会得到
-        // String??（对可选属性做可选链会多包一层），传不进 windowLabel。
-        guard let forecast, let end = forecast.officialWindowEnd, end > now else { return nil }
+        guard let forecast, let end = forecast.watchExpiresAt, end > now else { return nil }
         return UsageStatMetric(
             id: "reset",
-            label: "Tibo 预告",
-            value: windowLabel(forecast.officialWindowLabel),
-            subtitle: "约 \(lead(end.timeIntervalSince(now))) 后"
+            label: "Tibo 信号",
+            value: forecast.watchChancePercent.map { "\($0)%" } ?? "关注中",
+            subtitle: "点击查看详情"
         )
     }
 
-    /// 只翻译见过的确切字符串，其余一律「有预告」。
-    ///
-    /// 不猜译：`in a bit` 译成「稍后」可能被读成「还早」，做出相反决策。
-    /// 也不显示英文原文：`official hint — timing unspecified` 有 34 个字符，
-    /// 格子只有 121pt 宽，必然溢出。「有预告」对任何 label 都成立，
-    /// 真正可操作的时间在副行 —— 那是 `end_at` 算出来的，不经过任何文本理解。
-    private static func windowLabel(_ raw: String?) -> String {
-        switch raw {
-        case "within an hour", "within the hour": return "1 小时内"
-        case "within 30 minutes": return "30 分钟内"
-        case "within a few hours": return "几小时内"
-        case "later today": return "今天内"
-        case "official hint — timing unspecified": return "时间未定"
-        default: return "有预告"
-        }
-    }
-
-    /// "40 分钟" / "2 小时 47 分" / "2 天"。
-    /// 比 Fmt.until 粗：预告窗口可以横跨两天（"end of Monday"），也可以只剩几分钟，
-    /// 一个格式化器同时照顾两端会很别扭，所以这里单独写一个。
-    private static func lead(_ seconds: TimeInterval) -> String {
-        let s = max(0, Int(seconds))
-        if s >= 86_400 { return "\(s / 86_400) 天" }
-        if s >= 3_600 {
-            let h = s / 3_600, m = (s % 3_600) / 60
-            return m > 0 ? "\(h) 小时 \(m) 分" : "\(h) 小时"
-        }
-        return "\(max(1, s / 60)) 分钟"
-    }
-
-    // MARK: - 优先级 3：重置概率
-
-    /// 闲置时最有决策价值的一个数：今晚到明天值不值得等。
-    ///
-    /// 这个概率的绝对精度不高（接口自己的 backtest 里 brier 0.100，只比基线 0.103 好 3%），
-    /// 但用户要的不是精度，是一个能横向比较、会随天数推移变化的信号 ——
-    /// 「30%」能支撑「今晚别等了」的决定，「距上次 6 天」不能。
-    /// 口径是未来 24 小时；重置窗口固定在 UTC 23:00–02:00（北京时间早上），
-    /// 所以对国内用户来说「明天」和「24 小时内」指的是同一件事。
-    private static func resetOdds(_ forecast: CodexResetForecast?) -> UsageStatMetric? {
-        guard let forecast, let odds = forecast.probability24h else { return nil }
-        return UsageStatMetric(
-            id: "reset",
-            label: "明天重置",
-            value: "\(odds)%",
-            subtitle: forecast.probability48h.map { "两天内 \($0)%" }
-        )
-    }
-
-    // MARK: - 优先级 4：节奏事实
+    // MARK: - 优先级 3：节奏事实
 
     /// 概率缺失时的兜底（接口降级成 heuristic 模式时会没有 probabilities）。
     /// 「距上次 6.0 天 · 近期 2.3 天一轮」让用户自己判断「超期了」。
@@ -164,7 +113,7 @@ enum CodexResetTile {
             id: "reset",
             label: "距上次重置",
             value: String(format: "%.1f 天", age),
-            subtitle: forecast.recentMedianDays.map { String(format: "近期 %.1f 天一轮", $0) }
+            subtitle: forecast.averageIntervalDays.map { String(format: "平均 %.1f 天一轮", $0) }
         )
     }
 }

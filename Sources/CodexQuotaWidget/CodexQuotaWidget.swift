@@ -30,7 +30,11 @@ private struct CodexQuotaWidgetView: View {
     let entry: CodexQuotaEntry
 
     var body: some View {
-        CodexQuotaCard(snapshot: entry.snapshot, now: entry.date)
+        CodexQuotaCard(
+            snapshot: entry.snapshot,
+            now: entry.date,
+            language: CodexWidgetSnapshotStore.loadLanguage()
+        )
             .containerBackground(for: .widget) { Color.clear }
     }
 }
@@ -39,11 +43,18 @@ private struct CodexQuotaWidget: Widget {
     let kind = "CodexQuotaWidget"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: CodexQuotaProvider()) { entry in
+        let language = CodexWidgetSnapshotStore.loadLanguage()
+        return StaticConfiguration(kind: kind, provider: CodexQuotaProvider()) { entry in
             CodexQuotaWidgetView(entry: entry)
         }
-        .configurationDisplayName("Codex 剩余额度")
-        .description("查看 Codex 7 天额度的剩余百分比与重置时间。")
+        .configurationDisplayName(
+            language == .english ? "Codex Remaining Quota" : "Codex 剩余额度"
+        )
+        .description(
+            language == .english
+                ? "View the remaining percentage and reset time for your Codex 7-day quota."
+                : "查看 Codex 7 天额度的剩余百分比与重置时间。"
+        )
         .supportedFamilies([.systemMedium])
         .contentMarginsDisabled()
     }

@@ -65,4 +65,37 @@ import Foundation
         model.claudeFailures = 0
         #expect(model.claudeMinGap == 90)
     }
+
+    /// 有旧缓存时，即使允许网络兜底也必须明确等待 Desktop 更新；否则 UI 会把旧值
+    /// 误报成「正在重新连接」，同时自动刷新又永远不会真正进入网络兜底。
+    @Test func staleDesktopCacheAlwaysShowsWaitingState() {
+        #expect(AppModel.shouldWaitForClaudeDesktopUsage(
+            hasCachedUsage: true,
+            cacheIsFresh: false,
+            credentialFallbackEnabled: true
+        ))
+    }
+
+    @Test func freshDesktopCacheClearsWaitingState() {
+        #expect(!AppModel.shouldWaitForClaudeDesktopUsage(
+            hasCachedUsage: true,
+            cacheIsFresh: true,
+            credentialFallbackEnabled: true
+        ))
+    }
+
+    /// 回归：旧实现只要磁盘里存在缓存就提前返回，导致缓存过期后永远不会自动兜底。
+    @Test func staleDesktopCacheUsesEnabledCredentialFallback() {
+        #expect(AppModel.shouldUseClaudeCredentialFallback(
+            hasCachedUsage: true,
+            cacheIsFresh: false,
+            credentialFallbackEnabled: true
+        ))
+        #expect(!AppModel.shouldUseClaudeCredentialFallback(
+            hasCachedUsage: true,
+            cacheIsFresh: true,
+            credentialFallbackEnabled: true
+        ))
+    }
+
 }

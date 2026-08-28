@@ -6,6 +6,7 @@ import SwiftUI
 struct WeekActivityChart: View {
     let series: [DailyUsagePoint]   // oldest first, today last
     var title = "近 7 天"
+    var language: AppLanguage = .chinese
 
     /// Dollar mode when any point carries a cost (Claude's local logs); token mode otherwise.
     private var usesCost: Bool { series.contains { ($0.cost ?? 0) > 0 } }
@@ -31,7 +32,7 @@ struct WeekActivityChart: View {
             }
             if maxValue == 0 {
                 Spacer(minLength: 0)
-                Text("本周暂无活动")
+                Text(language.text("本周暂无活动", "No activity this week"))
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.35))
                     .frame(maxWidth: .infinity)
                 Spacer(minLength: 0)
@@ -85,7 +86,7 @@ struct WeekActivityChart: View {
 
     private func dayLetter(_ date: Date) -> String {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "zh_Hans_CN")
+        f.locale = Locale(identifier: language == .english ? "en_US" : "zh_Hans_CN")
         f.dateFormat = "EEEEE"   // narrow weekday, e.g. "M"
         return f.string(from: date)
     }

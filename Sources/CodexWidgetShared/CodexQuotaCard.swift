@@ -4,10 +4,16 @@ import SwiftUI
 public struct CodexQuotaCard: View {
     private let snapshot: CodexWidgetSnapshot?
     private let now: Date
+    private let language: CodexWidgetLanguage
 
-    public init(snapshot: CodexWidgetSnapshot?, now: Date = Date()) {
+    public init(
+        snapshot: CodexWidgetSnapshot?,
+        now: Date = Date(),
+        language: CodexWidgetLanguage = .chinese
+    ) {
         self.snapshot = snapshot
         self.now = now
+        self.language = language
     }
 
     public var body: some View {
@@ -41,7 +47,7 @@ public struct CodexQuotaCard: View {
                     .foregroundStyle(.white)
             }
             Spacer(minLength: 9)
-            Text("7 天额度")
+            Text(text("7 天额度", "7-day quota"))
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(.white.opacity(0.88))
             Spacer(minLength: 7)
@@ -184,29 +190,47 @@ public struct CodexQuotaCard: View {
 
     private var resetLabel: String {
         guard let reset = snapshot?.resetsAt else {
-            return snapshot == nil ? "等待同步额度" : "重置时间待同步"
+            return snapshot == nil
+                ? text("等待同步额度", "Waiting for quota")
+                : text("重置时间待同步", "Reset time unavailable")
         }
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M月d日"
-        return "\(formatter.string(from: reset))重置"
+        formatter.locale = Locale(identifier: language == .english ? "en_US" : "zh_CN")
+        formatter.dateFormat = language == .english ? "MMM d" : "M月d日"
+        let date = formatter.string(from: reset)
+        return text("\(date)重置", "Resets \(date)")
     }
 
     private var detailLabel: String {
-        guard let snapshot else { return "打开 Claude Notch 后自动更新" }
+        guard let snapshot else {
+            return text("打开 Claude Notch 后自动更新", "Open Claude Notch to update")
+        }
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.locale = Locale(identifier: language == .english ? "en_US" : "zh_CN")
         formatter.dateFormat = "HH:mm"
-        let update = "更新于 \(formatter.string(from: snapshot.fetchedAt))"
+        let update = text(
+            "更新于 \(formatter.string(from: snapshot.fetchedAt))",
+            "Updated \(formatter.string(from: snapshot.fetchedAt))"
+        )
         guard let reset = snapshot.resetsAt else { return update }
         let seconds = reset.timeIntervalSince(now)
-        guard seconds > 0 else { return "即将重置 · \(update)" }
+        guard seconds > 0 else { return text("即将重置 · \(update)", "Resetting soon · \(update)") }
         let days = max(1, Int(ceil(seconds / 86_400)))
-        return "还剩 \(days) 天 · \(update)"
+        return text("还剩 \(days) 天 · \(update)", "\(days)d remaining · \(update)")
     }
 
     private var accessibilityLabel: String {
-        guard let snapshot else { return "Codex 7 天额度，等待同步" }
-        return "Codex 7 天额度，剩余 \(Int((snapshot.remainingFraction * 100).rounded()))%，\(resetLabel)"
+        guard let snapshot else {
+            return text("Codex 7 天额度，等待同步", "Codex 7-day quota, waiting to sync")
+        }
+        let percent = Int((snapshot.remainingFraction * 100).rounded())
+        return text(
+            "Codex 7 天额度，剩余 \(percent)%，\(resetLabel)",
+            "Codex 7-day quota, \(percent)% remaining, \(resetLabel)"
+        )
+    }
+
+    private func text(_ chinese: String, _ english: String) -> String {
+        language == .chinese ? chinese : english
     }
 }

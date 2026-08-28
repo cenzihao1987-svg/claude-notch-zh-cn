@@ -9,6 +9,7 @@ struct ProjectUsage: Equatable, Sendable, Identifiable {
     let cost: Double
     let tokens: Int
     let last: Date          // most recent activity in the window
+    var cwd: String = ""
 }
 
 struct UsageSnapshot: Equatable, Sendable {
@@ -21,8 +22,9 @@ struct UsageSnapshot: Equatable, Sendable {
     var activeSessionTokens: Int
     var activeSessionCost: Double = 0
     var weeklyTokens: Int = 0
-    /// Projects worked in today with their spend, most-recently-active first (for the sessions list).
-    var projectsToday: [ProjectUsage] = []
+    /// 近 24 小时动过的任务及其花费，最近活跃的排在前面（用于任务列表）。
+    /// 刻意不按自然日：应用连续开着跨过午夜时，列表不该在 00:00 清空。
+    var recentProjects: [ProjectUsage] = []
     var topModel: String?
     /// Rough fallback usage (0…1): active-block tokens ÷ largest block ever seen.
     /// Used only until the authoritative statusline rate-limit % is available.

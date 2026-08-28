@@ -1,34 +1,48 @@
 import SwiftUI
 
 enum Fmt {
-    static func hm(_ t: TimeInterval) -> String {
+    static func hm(_ t: TimeInterval, language: AppLanguage = .chinese) -> String {
         let m = Int(t) / 60
-        return "\(m / 60)小时\(String(format: "%02d", m % 60))分"
+        return language.text(
+            "\(m / 60)小时\(String(format: "%02d", m % 60))分",
+            "\(m / 60)h \(String(format: "%02d", m % 60))m"
+        )
     }
     static func pct(_ fraction: Double) -> String {
         "\(Int((fraction * 100).rounded()))%"
     }
     /// "40分" / "1小时10分" / "4天17小时" —— 剩余时间。不足 1 小时时不写「0小时」，
     /// 因为重置格子会把这个字符串当主数值放大显示，「0小时40分」在那个位置很刺眼。
-    static func until(_ date: Date) -> String {
+    static func until(_ date: Date, language: AppLanguage = .chinese) -> String {
         let s = max(0, Int(date.timeIntervalSinceNow))
         let d = s / 86_400, h = (s % 86_400) / 3600, m = (s % 3600) / 60
-        if d > 0 { return "\(d)天\(h)小时" }
-        if h > 0 { return "\(h)小时\(String(format: "%02d", m))分" }
-        return "\(m)分"
+        if d > 0 { return language.text("\(d)天\(h)小时", "\(d)d \(h)h") }
+        if h > 0 {
+            return language.text(
+                "\(h)小时\(String(format: "%02d", m))分",
+                "\(h)h \(String(format: "%02d", m))m"
+            )
+        }
+        return language.text("\(m)分", "\(m)m")
     }
     /// "35m" / "1h 05m" — a duration.
-    static func dur(_ t: TimeInterval) -> String {
+    static func dur(_ t: TimeInterval, language: AppLanguage = .chinese) -> String {
         let m = max(0, Int(t) / 60)
-        return m >= 60 ? "\(m / 60)小时\(String(format: "%02d", m % 60))分" : "\(m)分"
+        if m >= 60 {
+            return language.text(
+                "\(m / 60)小时\(String(format: "%02d", m % 60))分",
+                "\(m / 60)h \(String(format: "%02d", m % 60))m"
+            )
+        }
+        return language.text("\(m)分", "\(m)m")
     }
     /// "4s" / "2m" / "1h" / "2d" — compact age of a timestamp.
-    static func ago(_ date: Date) -> String {
+    static func ago(_ date: Date, language: AppLanguage = .chinese) -> String {
         let s = max(0, Int(-date.timeIntervalSinceNow))
-        if s < 60 { return "\(s)秒" }
-        if s < 3600 { return "\(s / 60)分" }
-        if s < 86_400 { return "\(s / 3600)小时" }
-        return "\(s / 86_400)天"
+        if s < 60 { return language.text("\(s)秒", "\(s)s") }
+        if s < 3600 { return language.text("\(s / 60)分", "\(s / 60)m") }
+        if s < 86_400 { return language.text("\(s / 3600)小时", "\(s / 3600)h") }
+        return language.text("\(s / 86_400)天", "\(s / 86_400)d")
     }
     static func tokens(_ n: Int) -> String {
         switch n {
