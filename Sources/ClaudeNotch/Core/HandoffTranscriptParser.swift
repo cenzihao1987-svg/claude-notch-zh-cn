@@ -9,6 +9,7 @@ enum HandoffTranscriptParser {
         switch provider {
         case .claude: context = parseClaude(objects)
         case .codex: context = parseCodex(objects)
+        case .deepseek: context = .init()
         }
         return HandoffTranscriptContext(
             latestUserGoal: context.latestUserGoal.map(HandoffRedactor.sanitize),

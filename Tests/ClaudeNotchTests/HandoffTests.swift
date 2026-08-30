@@ -102,6 +102,25 @@ import Testing
 }
 
 @Suite struct HandoffInstructionBuilderTests {
+    @Test func sourceTasksOfferTheirPeerAndWorkBuddy() {
+        let codex = AgentTaskReference(
+            provider: .codex, sessionID: "c1", title: "Codex task",
+            cwd: "/tmp/project", transcriptPath: nil
+        )
+        let claude = AgentTaskReference(
+            provider: .claude, sessionID: "a1", title: "Claude task",
+            cwd: "/tmp/project", transcriptPath: nil
+        )
+
+        #expect(codex.handoffDestinations == [.claudeDesktop, .workBuddy])
+        #expect(claude.handoffDestinations == [.codex, .workBuddy])
+        #expect(HandoffDestination.workBuddy.agentName == "WorkBuddy")
+        #expect(HandoffDestination.workBuddy.menuLabel(language: .chinese) == "交给 WorkBuddy")
+        #expect(HandoffDestination.workBuddy.menuLabel(language: .english) == "To WorkBuddy")
+        #expect(HandoffDestination.workBuddy.openedMessage(language: .chinese)
+            == "已打开 WorkBuddy，请检查后发送")
+    }
+
     @Test func onlyActiveWorkBlocksHandoff() {
         #expect(AgentActivityState.working.blocksTaskHandoff)
         #expect(AgentActivityState.thinking.blocksTaskHandoff)
@@ -134,7 +153,7 @@ import Testing
         let instruction = HandoffInstructionBuilder.make(
             packet: packet,
             packetPath: "/tmp/handoff.json",
-            destination: .claude
+            destination: .claudeDesktop
         )
 
         #expect(instruction.count <= HandoffInstructionBuilder.maximumCharacters)
@@ -152,6 +171,35 @@ import Testing
         let items = URLComponents(url: url!, resolvingAgainstBaseURL: false)?.queryItems
         #expect(items?.first(where: { $0.name == "q" })?.value == instruction)
         #expect(items?.first(where: { $0.name == "folder" })?.value == packet.cwd)
+
+        let workBuddyInstruction = HandoffInstructionBuilder.make(
+            packet: packet,
+            packetPath: "/tmp/handoff.json",
+            destination: .workBuddy
+        )
+        #expect(workBuddyInstruction.contains("目标 Agent：WorkBuddy"))
+    }
+
+    @Test func workBuddyURLCarriesOnlyDraftPromptAndMainDirectory() throws {
+        let instruction = "继续完成接力，检查特殊字符 & ? #"
+        let cwd = "/tmp/有空格的项目"
+        let url = try #require(HandoffInstructionBuilder.workBuddyURL(
+            cwd: cwd, instruction: instruction
+        ))
+
+        #expect(url.scheme == "workbuddy")
+        #expect(url.host == "task")
+        let items = try #require(URLComponents(
+            url: url, resolvingAgainstBaseURL: false
+        )?.queryItems)
+        #expect(items.first(where: { $0.name == "action" })?.value == "start")
+        #expect(items.first(where: { $0.name == "prompt" })?.value == instruction)
+        #expect(items.first(where: { $0.name == "cwd" })?.value == cwd)
+        #expect(items.first(where: { $0.name == "welcomeMode" })?.value == "code")
+        #expect(items.first(where: { $0.name == "permissionMode" }) == nil)
+        #expect(items.first(where: { $0.name == "model" }) == nil)
+        #expect(items.first(where: { $0.name == "skills" }) == nil)
+        #expect(items.first(where: { $0.name == "connectorIds" }) == nil)
     }
 }
 

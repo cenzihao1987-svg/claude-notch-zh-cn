@@ -22,6 +22,8 @@ let package = Package(
             resources: [
                 .copy("Resources/codex.svg"),
                 .copy("Resources/codex.png"),
+                .copy("Resources/deepseek.png"),
+                .copy("Resources/openai.png"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

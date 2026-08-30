@@ -24,6 +24,12 @@ import Testing
         #expect(IslandView.singlePageStats(for: snapshot).map(\.id) == ["credits", "reset"])
     }
 
+    @MainActor @Test func incompleteSummaryRowExpandsItsRemainingTiles() {
+        #expect(IslandView.summaryRowItemCounts(itemCount: 3, columnCount: 2) == [2, 1])
+        #expect(IslandView.summaryRowItemCounts(itemCount: 5, columnCount: 3) == [3, 2])
+        #expect(IslandView.summaryRowItemCounts(itemCount: 2, columnCount: 2) == [2])
+    }
+
     @Test func liveAppServerExchangeWhenRequested() async {
         guard ProcessInfo.processInfo.environment["CODEX_NOTCH_RUN_INTEGRATION_TEST"] == "1" else {
             return

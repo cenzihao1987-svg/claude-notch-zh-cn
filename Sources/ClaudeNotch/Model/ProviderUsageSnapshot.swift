@@ -3,6 +3,7 @@ import Foundation
 enum UsageProviderID: String, CaseIterable, Identifiable, Sendable {
     case claude
     case codex
+    case deepseek
 
     var id: String { rawValue }
 
@@ -10,6 +11,7 @@ enum UsageProviderID: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: "Claude"
         case .codex: "Codex"
+        case .deepseek: "DeepSeek"
         }
     }
 
@@ -17,6 +19,7 @@ enum UsageProviderID: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: "sparkles"
         case .codex: "terminal.fill"
+        case .deepseek: "bubble.left.and.bubble.right.fill"
         }
     }
 }
@@ -83,6 +86,8 @@ struct ProviderUsageSnapshot: Equatable, Sendable {
     var source: String?
     var fetchedAt: Date?
     var statusMessage: String?
+    /// A balance-style heading for providers that have money but no real usage percentage.
+    var headlineValue: String?
 
     /// The headline fraction for the collapsed pill: the FIRST limit's value, nil when that limit
     /// has no value yet. Deliberately not "first non-nil" — falling through to a later limit would

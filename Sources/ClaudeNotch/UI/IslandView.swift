@@ -26,12 +26,15 @@ private struct HandoffSessionRow: View {
     let canHandoff: Bool
     let canCopy: Bool
     let handoffLabel: String
+    let handoffDestinations: [HandoffDestination]
+    let destinationLabel: (HandoffDestination) -> String
     let help: String
     let language: AppLanguage
-    let onHandoff: () -> Void
+    let onHandoff: (HandoffDestination) -> Void
     let onCopy: () -> Void
 
     @State private var isHovering = false
+    @State private var showsHandoffMenu = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -53,28 +56,20 @@ private struct HandoffSessionRow: View {
                 .accessibilityLabel(language.text("复制交接指令", "Copy handoff instructions"))
             } else if let status {
                 statusView(status)
-            } else if task != nil, isHovering {
-                Button(action: onHandoff) {
-                    HStack(spacing: 5) {
-                        Text(handoffLabel)
-                        Image(systemName: "arrow.right.circle.fill")
-                    }
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(.white.opacity(canHandoff ? 0.92 : 0.35))
-                        .lineLimit(1)
-                        .padding(.horizontal, 8)
-                        .frame(height: 22)
-                        .background(Color.white.opacity(canHandoff ? 0.10 : 0.05))
-                        .clipShape(Capsule())
-                        .overlay {
-                            Capsule().stroke(Color.white.opacity(canHandoff ? 0.12 : 0.06),
-                                             lineWidth: 0.5)
-                        }
+            } else if task != nil, isHovering || showsHandoffMenu {
+                Button {
+                    showsHandoffMenu = true
+                } label: {
+                    handoffButton
                 }
                 .buttonStyle(.plain)
+                .fixedSize()
                 .disabled(!canHandoff)
                 .help(help)
                 .accessibilityLabel(help)
+                .popover(isPresented: $showsHandoffMenu, arrowEdge: .bottom) {
+                    handoffDestinationMenu
+                }
             } else {
                 sessionMetadata
             }
@@ -83,6 +78,45 @@ private struct HandoffSessionRow: View {
         .frame(height: 22)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
+    }
+
+    private var handoffButton: some View {
+        HStack(spacing: 5) {
+            Text(handoffLabel)
+            Image(systemName: "arrow.right.circle.fill")
+        }
+        .font(.system(size: 10.5, weight: .semibold))
+        .foregroundStyle(.white.opacity(canHandoff ? 0.92 : 0.35))
+        .lineLimit(1)
+        .padding(.horizontal, 8)
+        .frame(height: 22)
+        .background(Color.white.opacity(canHandoff ? 0.10 : 0.05))
+        .clipShape(Capsule())
+        .overlay {
+            Capsule().stroke(Color.white.opacity(canHandoff ? 0.12 : 0.06), lineWidth: 0.5)
+        }
+    }
+
+    private var handoffDestinationMenu: some View {
+        VStack(spacing: 2) {
+            ForEach(handoffDestinations, id: \.self) { destination in
+                Button {
+                    showsHandoffMenu = false
+                    onHandoff(destination)
+                } label: {
+                    Text(destinationLabel(destination))
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .frame(height: 34)
+                        .contentShape(RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(6)
+        .frame(width: 190)
     }
 
     @ViewBuilder private func statusView(_ status: HandoffStatus) -> some View {
@@ -150,6 +184,10 @@ private struct HandoffSessionRow: View {
         case "Codex 任务未创建": return "Codex task was not created"
         case "Codex 任务已创建但深链未打开，交接指令已复制":
             return "Codex task created; link did not open; instructions copied"
+        case "未找到 WorkBuddy，交接指令已复制":
+            return "WorkBuddy was not found; instructions copied"
+        case "WorkBuddy 深链未打开，交接指令已复制":
+            return "WorkBuddy did not open; instructions copied"
         case "交接指令已复制": return "Handoff instructions copied"
         case "未找到 Codex": return "Codex was not found"
         case "Codex 本地接口响应超时": return "Codex timed out"
@@ -208,23 +246,47 @@ struct IslandView: View {
     private var language: AppLanguage { model.language }
     private var used: Double { provider.primaryUsage ?? 0 }
     private var displayedUsage: Double { displayFraction(provider.primaryUsage) ?? 0 }
+    private var usageAreaWidth: CGFloat {
+        guard expanded else { return wing }
+        return provider.headlineValue == nil ? 88 : 112
+    }
     /// Loaded once — this is read on every render of the closed row, and hitting the disk per
     /// frame during animations would be pure waste. MainActor because NSImage isn't Sendable.
     @MainActor private static let codexIcon: NSImage? = {
+        resourceImage(named: "codex")
+    }()
+    @MainActor private static let openAIIcon: NSImage? = {
+        guard let icon = resourceImage(named: "openai") else { return nil }
+        icon.isTemplate = true
+        return icon
+    }()
+    @MainActor private static let deepSeekIcon: NSImage? = {
+        guard let source = resourceImage(named: "deepseek") else { return nil }
+        let icon = NSImage(size: NSSize(width: 205, height: 165))
+        icon.lockFocus()
+        source.draw(
+            in: NSRect(origin: .zero, size: icon.size),
+            from: NSRect(x: 0, y: 0, width: 205, height: 165),
+            operation: .sourceOver,
+            fraction: 1
+        )
+        icon.unlockFocus()
+        icon.isTemplate = true
+        return icon
+    }()
+
+    @MainActor private static func resourceImage(named name: String) -> NSImage? {
         if let resourcesURL = Bundle.main.resourceURL,
            let packagedBundle = Bundle(
                url: resourcesURL.appendingPathComponent("ClaudeNotch_ClaudeNotch.bundle")
            ),
-           let url = packagedBundle.url(forResource: "codex", withExtension: "png"),
+           let url = packagedBundle.url(forResource: name, withExtension: "png"),
            let image = NSImage(contentsOf: url) {
             return image
         }
-
-        guard let url = Bundle.module.url(forResource: "codex", withExtension: "png") else {
-            return nil
-        }
+        guard let url = Bundle.module.url(forResource: name, withExtension: "png") else { return nil }
         return NSImage(contentsOf: url)
-    }()
+    }
 
     var body: some View {
         let shape = NotchShape(topRadius: 8,
@@ -251,19 +313,10 @@ struct IslandView: View {
     }
 
     @ViewBuilder private var settingsMenu: some View {
-        Menu(language.text("用量来源", "Usage source")) {
-            ForEach(UsageProviderID.allCases) { provider in
-                Button {
-                    model.selectProvider(provider)
-                } label: {
-                    if model.selectedProvider == provider {
-                        Label(provider.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(provider.displayName)
-                    }
-                }
-            }
-        }
+        Button(language.text("立即刷新", "Refresh now")) { model.refreshNow() }
+        Button(model.isPaused
+            ? language.text("恢复监测", "Resume monitoring")
+            : language.text("暂停监测", "Pause monitoring")) { model.togglePause() }
         Menu(language.text("图标", "Icon")) {
             ForEach(AvatarStyle.allCases) { style in
                 Button {
@@ -290,15 +343,11 @@ struct IslandView: View {
                 }
             }
         }
-        Button(language.text("立即刷新", "Refresh now")) { model.refreshNow() }
         Button((model.claudeCredentialFallbackEnabled ? "✓ " : "")
-            + language.text("Claude 备用获取（可能要求密码）",
-                            "Claude fallback access (may ask for password)")) {
+            + language.text("Claude 备用获取（Touch ID 优先）",
+                            "Claude fallback access (Touch ID preferred)")) {
             model.toggleClaudeCredentialFallback()
         }
-        Button(model.isPaused
-            ? language.text("恢复监测", "Resume monitoring")
-            : language.text("暂停监测", "Pause monitoring")) { model.togglePause() }
         Button((model.animateIcon ? "✓ " : "") + language.text("图标动画", "Animate icon")) {
             model.toggleAnimateIcon()
         }
@@ -346,7 +395,7 @@ struct IslandView: View {
     }
 
     private var usagePosition: CGFloat {
-        islandWidth - (expanded ? expandedUsageInset : closedUsageInset) - wing / 2
+        islandWidth - (expanded ? 16 : closedUsageInset) - usageAreaWidth / 2
     }
 
     private var activityState: AgentActivityState {
@@ -424,32 +473,39 @@ struct IslandView: View {
                 settingsButton
             }
         }
-        .frame(width: expanded ? 88 : wing, height: closedH, alignment: .trailing)
+        .frame(width: usageAreaWidth, height: closedH, alignment: .trailing)
         .opacity(model.isStale ? 0.5 : 1)
     }
 
     private var usageSummary: some View {
-        HStack(spacing: 5) {
-            Text(displayFraction(provider.primaryUsage).map(Fmt.pct) ?? "—")
-                .font(.system(size: 12, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(.white)
-            Ring(
-                fraction: displayedUsage,
-                state: model.selectedProvider == .codex
-                    ? remainingRingState(for: displayedUsage)
-                    : ringState(for: used),
-                lineWidth: 3,
-                drainsClockwise: model.selectedProvider == .codex
-            )
-                .frame(width: 14, height: 14)
+        Group {
+            if let headline = provider.headlineValue {
+                Text(headline)
+                    .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(.white)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            } else {
+                HStack(spacing: 5) {
+                    Text(displayFraction(provider.primaryUsage).map(Fmt.pct) ?? "—")
+                        .font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                        .foregroundStyle(.white)
+                    Ring(
+                        fraction: displayedUsage,
+                        state: model.selectedProvider == .codex
+                            ? remainingRingState(for: displayedUsage)
+                            : ringState(for: used),
+                        lineWidth: 3,
+                        drainsClockwise: model.selectedProvider == .codex
+                    )
+                        .frame(width: 14, height: 14)
+                }
+            }
         }
         .contentShape(Rectangle())
         .onTapGesture { presentation.isExpanded.toggle() }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(model.selectedProvider == .codex
-            ? language.text("Codex 剩余额度", "Codex remaining quota")
-            : language.text("Claude 用量", "Claude usage"))
-        .accessibilityValue(displayFraction(provider.primaryUsage).map(Fmt.pct)
+        .accessibilityLabel(usageAccessibilityLabel)
+        .accessibilityValue(provider.headlineValue ?? displayFraction(provider.primaryUsage).map(Fmt.pct)
             ?? language.text("未知", "Unknown"))
         .accessibilityHint(expanded
             ? language.text("收起用量卡片", "Collapse usage card")
@@ -485,14 +541,21 @@ struct IslandView: View {
                        active: item == model.selectedProvider && model.animateIcon
                            && !model.isPaused && !model.isAtLimit,
                        urgency: model.iconUrgency)
-        } else if let icon = Self.codexIcon {
+        } else if item == .codex,
+                  let icon = model.avatarStyle == .spark ? Self.openAIIcon : Self.codexIcon {
             CodexIconView(
                 image: icon,
                 active: item == model.selectedProvider && model.animateIcon
                     && !model.isPaused && !model.isAtLimit,
                 urgency: model.iconUrgency
             )
+            .foregroundStyle(.white.opacity(model.isPaused ? 0.45 : 0.9))
             .opacity(model.isPaused ? 0.45 : 0.9)
+        } else if item == .deepseek, let icon = Self.deepSeekIcon {
+            Image(nsImage: icon)
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(.white.opacity(model.isPaused ? 0.45 : 0.9))
         } else if let symbol = NSImage(
             systemSymbolName: item.systemImage,
             accessibilityDescription: item.displayName
@@ -502,7 +565,7 @@ struct IslandView: View {
                 .scaledToFit()
                 .foregroundStyle(.white.opacity(model.isPaused ? 0.45 : 0.9))
         } else {
-            Text("C")
+            Text(item == .deepseek ? "D" : "C")
                 .font(.system(size: 13, weight: .bold, design: .rounded))
                 .foregroundStyle(.white.opacity(model.isPaused ? 0.45 : 0.9))
         }
@@ -518,27 +581,27 @@ struct IslandView: View {
             .padding(.horizontal, expandedInset).padding(.top, 6).padding(.bottom, 9)
     }
 
-    private var singlePage: some View {
+    @ViewBuilder private var singlePage: some View {
+        if provider.provider == .deepseek {
+            deepSeekPage
+        } else {
+            providerDashboard
+        }
+    }
+
+    private var providerDashboard: some View {
         let snapshot = provider
         let limits = Self.singlePageLimits(for: snapshot)
         let stats = Self.singlePageStats(for: snapshot)
         let tileCount = limits.count + stats.count
         let columnCount = snapshot.provider == .codex ? 2 : (tileCount > 4 ? 3 : (tileCount > 2 ? 2 : 1))
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: columnCount)
         let summaryWidth: CGFloat = columnCount == 3 ? 380 : 270
-        let cellWidth = (summaryWidth - CGFloat(columnCount - 1) * 8) / CGFloat(columnCount)
         let chartWidth = contentWidth - summaryWidth - 8
         let hasStatus = snapshot.statusMessage != nil || model.isStale
+        let summaryItems = limits.map(SummaryTileItem.limit) + stats.map(SummaryTileItem.stat)
         return VStack(spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
-                LazyVGrid(columns: columns, spacing: 8) {
-                    ForEach(limits) { metric in
-                        providerLimitTile(metric).frame(width: cellWidth)
-                    }
-                    ForEach(stats) { metric in
-                        statTile(metric, width: cellWidth)
-                    }
-                }
+                summaryGrid(items: summaryItems, columnCount: columnCount)
                 .frame(width: summaryWidth, height: 136, alignment: .topLeading)
                 .opacity(model.isStale ? 0.55 : 1)
                 WeekActivityChart(
@@ -566,6 +629,65 @@ struct IslandView: View {
         .frame(width: contentWidth, alignment: .topLeading)
     }
 
+    private var deepSeekPage: some View {
+        let snapshot = provider
+        let stats = Self.singlePageStats(for: snapshot)
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 2)
+        let summaryWidth: CGFloat = 278
+        let cellWidth = (summaryWidth - 8) / 2
+        let chartWidth = contentWidth - summaryWidth - 8
+        return VStack(alignment: .leading, spacing: 8) {
+            if stats.isEmpty {
+                tile(language.text("DeepSeek 状态", "DeepSeek status"),
+                     localizedStatus(snapshot.statusMessage ?? "未找到 DeepSeek 配置"),
+                     height: .compact)
+                    .frame(width: contentWidth)
+            } else {
+                HStack(alignment: .top, spacing: 8) {
+                    LazyVGrid(columns: columns, spacing: 8) {
+                        ForEach(stats) { metric in
+                            statTile(metric).frame(width: cellWidth)
+                        }
+                    }
+                    .frame(width: summaryWidth, height: 136, alignment: .topLeading)
+                    if let history = model.deepSeekSpendHistory {
+                        WeekActivityChart(
+                            series: history.lastSevenDays(),
+                            title: language.text("近 7 天 · 消费", "Last 7 days · spend"),
+                            language: language,
+                            currency: history.currency
+                        )
+                        .frame(width: chartWidth, height: 136)
+                    } else {
+                        tile(language.text("近 7 天消费", "Last 7 days · spend"),
+                             language.text("等待自动读取“下载”中的最新导出", "Waiting for the latest export in Downloads"),
+                             height: .compact)
+                            .frame(width: chartWidth, height: 136)
+                    }
+                }
+                .frame(width: contentWidth, height: 136, alignment: .topLeading)
+                .opacity(model.isStale ? 0.55 : 1)
+            }
+            Text(deepSeekFooter(snapshot))
+                .font(.system(size: 10))
+                .foregroundStyle(snapshot.statusMessage == nil && model.deepSeekSpendError == nil
+                    ? .white.opacity(0.45)
+                    : Color(red: 0.96, green: 0.70, blue: 0.20))
+                .lineLimit(1).truncationMode(.tail)
+        }
+        .frame(width: contentWidth, alignment: .topLeading)
+    }
+
+    private func deepSeekFooter(_ snapshot: ProviderUsageSnapshot) -> String {
+        if let message = snapshot.statusMessage { return localizedStatus(message) }
+        if let message = model.deepSeekSpendError { return localizedStatus(message) }
+        if let history = model.deepSeekSpendHistory {
+            let name = URL(fileURLWithPath: history.sourcePath).lastPathComponent
+            return language.text("用量 CSV：\(name)", "Usage CSV: \(name)")
+        }
+        return language.text("每天 09:00、21:00 自动读取“下载”中的最新导出", "Automatically reads the latest download at 09:00 and 21:00")
+    }
+
     static func singlePageLimits(for snapshot: ProviderUsageSnapshot) -> [UsageLimitMetric] {
         guard snapshot.provider == .codex else { return snapshot.limits }
         return Array(snapshot.limits.filter { metric in
@@ -583,6 +705,21 @@ struct IslandView: View {
             if let metric = snapshot.stats.first(where: { $0.id == id }) { result.append(metric) }
         }
         return result
+    }
+
+    static func summaryRowItemCounts(itemCount: Int, columnCount: Int) -> [Int] {
+        guard itemCount > 0, columnCount > 0 else { return [] }
+        return stride(from: 0, to: itemCount, by: columnCount).map {
+            min(columnCount, itemCount - $0)
+        }
+    }
+
+    private var usageAccessibilityLabel: String {
+        switch model.selectedProvider {
+        case .claude: language.text("Claude 用量", "Claude usage")
+        case .codex: language.text("Codex 剩余额度", "Codex remaining quota")
+        case .deepseek: language.text("DeepSeek 剩余余额", "DeepSeek remaining balance")
+        }
     }
 
     // Tap to flip between the provider's primary and alternate session lists when both exist.
@@ -653,22 +790,77 @@ struct IslandView: View {
             status: task.flatMap { model.handoffStates[$0.id] },
             canHandoff: task.map(model.canHandoff) ?? false,
             canCopy: task.map(model.canCopyHandoffInstruction) ?? false,
-            handoffLabel: task.map(model.handoffLabel) ?? "",
+            handoffLabel: task == nil ? "" : model.handoffLabel(),
+            handoffDestinations: task?.handoffDestinations ?? [],
+            destinationLabel: model.handoffDestinationLabel,
             help: task.map(model.handoffHelp) ?? "",
             language: language,
-            onHandoff: { if let task { model.handoff(task) } },
+            onHandoff: { destination in
+                if let task { model.handoff(task, to: destination) }
+            },
             onCopy: { if let task { model.copyHandoffInstruction(task) } }
         )
     }
 
-    @ViewBuilder private func providerLimitTile(_ metric: UsageLimitMetric) -> some View {
+    private enum SummaryTileItem: Identifiable {
+        case limit(UsageLimitMetric)
+        case stat(UsageStatMetric)
+
+        var id: String {
+            switch self {
+            case let .limit(metric): "limit-\(metric.id)"
+            case let .stat(metric): "stat-\(metric.id)"
+            }
+        }
+    }
+
+    private func summaryGrid(
+        items: [SummaryTileItem],
+        columnCount: Int,
+        height: CGFloat = 136
+    ) -> some View {
+        let rowCounts = Self.summaryRowItemCounts(
+            itemCount: items.count,
+            columnCount: columnCount
+        )
+        let rowHeight = rowCounts.isEmpty
+            ? height
+            : (height - CGFloat(rowCounts.count - 1) * 8) / CGFloat(rowCounts.count)
+        return VStack(spacing: 8) {
+            ForEach(rowCounts.indices, id: \.self) { rowIndex in
+                let start = rowIndex * columnCount
+                let end = start + rowCounts[rowIndex]
+                HStack(spacing: 8) {
+                    ForEach(Array(items[start..<end])) { item in
+                        summaryTile(item, minHeight: rowHeight)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func summaryTile(_ item: SummaryTileItem, minHeight: CGFloat) -> some View {
+        switch item {
+        case let .limit(metric):
+            providerLimitTile(metric, minHeight: minHeight)
+        case let .stat(metric):
+            statTile(metric, minHeight: minHeight)
+        }
+    }
+
+    @ViewBuilder private func providerLimitTile(
+        _ metric: UsageLimitMetric,
+        minHeight: CGFloat = 64
+    ) -> some View {
         let isClaudeSession = metric.id == "claude-session"
         let label = localizedLimitLabel(metric.label) + (model.selectedProvider == .codex
             ? language.text(" · 剩余", " · remaining")
             : "")
         limitTile(label, displayFraction(metric.usedFraction), resets: metric.resetsAt,
                   warningUsage: metric.usedFraction,
-                  eta: isClaudeSession && !prefReset ? model.etaToLimit : nil)
+                  eta: isClaudeSession && !prefReset ? model.etaToLimit : nil,
+                  minHeight: minHeight)
             .contentShape(Rectangle())
             .onTapGesture {
                 if isClaudeSession, model.etaToLimit != nil { prefReset.toggle() }
@@ -677,8 +869,8 @@ struct IslandView: View {
 
     // A limit tile: label, big colour-coded %, and a "resets in …" subline.
     private func limitTile(_ label: String, _ value: Double?, resets: Date?, warningUsage: Double?,
-                           eta: TimeInterval? = nil) -> some View {
-        tileBox {
+                           eta: TimeInterval? = nil, minHeight: CGFloat = 64) -> some View {
+        tileBox(minHeight: minHeight) {
             Text(label).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
             Text(value.map(Fmt.pct) ?? "—")
                 .font(.system(size: 18, weight: .semibold)).monospacedDigit()
@@ -713,7 +905,13 @@ struct IslandView: View {
     }
 
     // A plain value tile, with an optional muted subline (e.g. a projection).
-    private func tile(_ label: String, _ value: String, height: TileHeight, sub: String? = nil) -> some View {
+    private func tile(
+        _ label: String,
+        _ value: String,
+        height: TileHeight,
+        sub: String? = nil,
+        minHeight: CGFloat? = nil
+    ) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
             Text(value).font(.system(size: height.valueSize, weight: .medium)).monospacedDigit()
@@ -724,17 +922,21 @@ struct IslandView: View {
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
-        .frame(maxWidth: .infinity, minHeight: height.minHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity,
+               minHeight: minHeight ?? height.minHeight,
+               alignment: .topLeading)
         .background(Color.white.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
-    @ViewBuilder private func statTile(_ metric: UsageStatMetric, width: CGFloat) -> some View {
+    @ViewBuilder private func statTile(
+        _ metric: UsageStatMetric,
+        minHeight: CGFloat = 64
+    ) -> some View {
         if metric.id == "reset" {
             Link(destination: CodexResetSource.websiteURL) {
                 tile(localizedStatLabel(metric), localizedStatValue(metric),
-                     height: .compact, sub: localizedStatSubtitle(metric))
-                    .frame(width: width)
+                     height: .compact, sub: localizedStatSubtitle(metric), minHeight: minHeight)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -745,15 +947,17 @@ struct IslandView: View {
             ))
         } else {
             tile(localizedStatLabel(metric), localizedStatValue(metric),
-                 height: .compact, sub: localizedStatSubtitle(metric))
-                .frame(width: width)
+                 height: .compact, sub: localizedStatSubtitle(metric), minHeight: minHeight)
         }
     }
 
-    private func tileBox<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+    private func tileBox<C: View>(
+        minHeight: CGFloat = 64,
+        @ViewBuilder _ content: () -> C
+    ) -> some View {
         VStack(alignment: .leading, spacing: 1, content: content)
             .padding(.horizontal, 10).padding(.vertical, 5)
-            .frame(maxWidth: .infinity, minHeight: 64, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
             .background(Color.white.opacity(0.06))
             .clipShape(RoundedRectangle(cornerRadius: 10))
     }
@@ -788,6 +992,10 @@ struct IslandView: View {
 
     private func localizedStatLabel(_ metric: UsageStatMetric) -> String {
         switch metric.id {
+        case "deepseek-total-balance": language.text("总可用余额", "Total balance")
+        case "deepseek-topped-up-balance": language.text("充值余额", "Topped-up balance")
+        case "deepseek-granted-balance": language.text("赠金余额", "Granted balance")
+        case "deepseek-api-status": language.text("API 状态", "API status")
         case "tokens-today": language.text("今日 Token · 账号", "Today · account")
         case "tokens-yesterday": language.text("昨日 Token · 账号", "Yesterday · account")
         case "credits": language.text("可用额度", "Available credits")
@@ -802,6 +1010,7 @@ struct IslandView: View {
     private func localizedStatValue(_ metric: UsageStatMetric) -> String {
         if metric.value == "unlimited" { return language.text("无限", "Unlimited") }
         if metric.value == "available" { return language.text("可用", "Available") }
+        if metric.value == "unavailable" { return language.text("不可用", "Unavailable") }
         if metric.value == "none" { return language.text("无", "None") }
         if metric.id == "longest-task" {
             guard language == .chinese else { return metric.value }
@@ -855,6 +1064,8 @@ struct IslandView: View {
             language.text("近 7 天 · 本地", "Last 7 days · local")
         case "last 7 days · account", "近 7 天 · 账号":
             language.text("近 7 天 · 账号", "Last 7 days · account")
+        case "last 7 days · spend", "近 7 天 · 消费":
+            language.text("近 7 天 · 消费", "Last 7 days · spend")
         case "active sessions", "活跃会话": language.text("活跃会话", "Active sessions")
         case "all-time · top projects", "累计 · 高频项目":
             language.text("累计 · 高频项目", "All-time · top projects")
@@ -870,6 +1081,23 @@ struct IslandView: View {
         case "Account usage requires ChatGPT sign-in", "需登录 ChatGPT 才能查看账号用量":
             language.text("需登录 ChatGPT 才能查看账号用量",
                           "Sign in to ChatGPT to view account usage")
+        case "未找到 DeepSeek 配置": language.text("未找到 DeepSeek 配置", "DeepSeek configuration not found")
+        case "DeepSeek 配置格式无效": language.text("DeepSeek 配置格式无效", "DeepSeek configuration is invalid")
+        case "未找到可用 DeepSeek 配置":
+            language.text("未找到可用 DeepSeek 配置", "No active DeepSeek configuration found")
+        case "DeepSeek API Key 无效": language.text("DeepSeek API Key 无效", "DeepSeek API key is invalid")
+        case "DeepSeek 余额不足": language.text("DeepSeek 余额不足", "DeepSeek balance is insufficient")
+        case "DeepSeek 请求过于频繁": language.text("DeepSeek 请求过于频繁", "DeepSeek is rate limited")
+        case "DeepSeek 服务暂不可用": language.text("DeepSeek 服务暂不可用", "DeepSeek service is unavailable")
+        case "DeepSeek 返回格式无效": language.text("DeepSeek 返回格式无效", "DeepSeek response is invalid")
+        case "无法连接 DeepSeek": language.text("无法连接 DeepSeek", "Unable to connect to DeepSeek")
+        case "无法读取 DeepSeek 用量 CSV": language.text("无法读取 DeepSeek 用量 CSV", "Unable to read DeepSeek usage CSV")
+        case "DeepSeek 用量 CSV 格式无效": language.text("DeepSeek 用量 CSV 格式无效", "DeepSeek usage CSV is invalid")
+        case "DeepSeek 用量 CSV 缺少日期列": language.text("DeepSeek 用量 CSV 缺少日期列", "DeepSeek usage CSV has no date column")
+        case "DeepSeek 用量 CSV 缺少金额列": language.text("DeepSeek 用量 CSV 缺少金额列", "DeepSeek usage CSV has no amount column")
+        case "DeepSeek 用量 CSV 没有可用消费记录": language.text("DeepSeek 用量 CSV 没有可用消费记录", "DeepSeek usage CSV has no usable spend rows")
+        case "DeepSeek 用量 CSV 包含多种币种": language.text("DeepSeek 用量 CSV 包含多种币种", "DeepSeek usage CSV contains multiple currencies")
+        case "未在导出目录中找到 cost CSV": language.text("未在“下载”中找到 DeepSeek cost CSV", "No DeepSeek cost CSV found in Downloads")
         default: message
         }
     }

@@ -1,5 +1,38 @@
 import Foundation
 
+enum HandoffDestination: String, CaseIterable, Equatable, Hashable, Sendable {
+    case claudeDesktop
+    case codex
+    case workBuddy
+
+    var agentName: String {
+        switch self {
+        case .claudeDesktop: "Claude Desktop"
+        case .codex: "Codex"
+        case .workBuddy: "WorkBuddy"
+        }
+    }
+
+    func menuLabel(language: AppLanguage) -> String {
+        switch self {
+        case .claudeDesktop: language.text("交给 Claude", "To Claude")
+        case .codex: language.text("交给 Codex", "To Codex")
+        case .workBuddy: language.text("交给 WorkBuddy", "To WorkBuddy")
+        }
+    }
+
+    func openedMessage(language: AppLanguage) -> String {
+        switch self {
+        case .claudeDesktop:
+            language.text("已交给 Claude 桌面端", "Handed off to Claude Desktop")
+        case .codex:
+            language.text("已交给 Codex", "Handed off to Codex")
+        case .workBuddy:
+            language.text("已打开 WorkBuddy，请检查后发送", "WorkBuddy opened; review and send")
+        }
+    }
+}
+
 struct AgentTaskReference: Equatable, Sendable, Identifiable {
     let provider: UsageProviderID
     let sessionID: String
@@ -10,8 +43,12 @@ struct AgentTaskReference: Equatable, Sendable, Identifiable {
 
     var id: String { "\(provider.rawValue):\(sessionID)" }
 
-    var destination: UsageProviderID {
-        provider == .codex ? .claude : .codex
+    var handoffDestinations: [HandoffDestination] {
+        switch provider {
+        case .claude: [.codex, .workBuddy]
+        case .codex: [.claudeDesktop, .workBuddy]
+        case .deepseek: []
+        }
     }
 }
 
@@ -37,8 +74,8 @@ struct TaskHandoffPacketV1: Codable, Equatable, Sendable {
 }
 
 enum HandoffResult: Equatable, Sendable {
-    case opened(destination: UsageProviderID, packetPath: String, instruction: String)
-    case fallback(destination: UsageProviderID, packetPath: String, instruction: String,
+    case opened(destination: HandoffDestination, packetPath: String, instruction: String)
+    case fallback(destination: HandoffDestination, packetPath: String, instruction: String,
                   reason: String)
     case failed(packetPath: String?, instruction: String?, reason: String)
 }

@@ -6,7 +6,7 @@ actor HandoffCoordinator {
 
     func handoff(
         task: AgentTaskReference,
-        to destination: UsageProviderID,
+        to destination: HandoffDestination,
         awaitingConfirmation: Bool
     ) async -> HandoffResult {
         let preparation = await withCheckedContinuation { continuation in
@@ -26,19 +26,19 @@ actor HandoffCoordinator {
         }
 
         switch destination {
-        case .claude:
+        case .claudeDesktop:
             let opened = await MainActor.run {
                 Self.openClaude(cwd: task.cwd, instruction: prepared.instruction)
             }
             if opened {
-                return .opened(destination: .claude, packetPath: prepared.packetPath,
+                return .opened(destination: .claudeDesktop, packetPath: prepared.packetPath,
                                instruction: prepared.instruction)
             }
             await MainActor.run {
                 Self.copyToPasteboard(prepared.instruction)
                 Self.openClaudeDesktop()
             }
-            return .fallback(destination: .claude, packetPath: prepared.packetPath,
+            return .fallback(destination: .claudeDesktop, packetPath: prepared.packetPath,
                              instruction: prepared.instruction,
                              reason: "Claude 桌面端深链未打开，交接指令已复制")
 
@@ -77,12 +77,40 @@ actor HandoffCoordinator {
             return .fallback(destination: .codex, packetPath: prepared.packetPath,
                              instruction: prepared.instruction,
                              reason: "Codex 任务已创建但深链未打开，交接指令已复制")
+
+        case .workBuddy:
+            let appURL = await MainActor.run {
+                NSWorkspace.shared.urlForApplication(
+                    withBundleIdentifier: "com.workbuddy.workbuddy"
+                )
+            }
+            guard appURL != nil else {
+                await MainActor.run { Self.copyToPasteboard(prepared.instruction) }
+                return .fallback(destination: .workBuddy, packetPath: prepared.packetPath,
+                                 instruction: prepared.instruction,
+                                 reason: "未找到 WorkBuddy，交接指令已复制")
+            }
+
+            let opened = await MainActor.run {
+                Self.openWorkBuddy(cwd: task.cwd, instruction: prepared.instruction)
+            }
+            if opened {
+                return .opened(destination: .workBuddy, packetPath: prepared.packetPath,
+                               instruction: prepared.instruction)
+            }
+            await MainActor.run {
+                Self.copyToPasteboard(prepared.instruction)
+                Self.openWorkBuddyDesktop()
+            }
+            return .fallback(destination: .workBuddy, packetPath: prepared.packetPath,
+                             instruction: prepared.instruction,
+                             reason: "WorkBuddy 深链未打开，交接指令已复制")
         }
     }
 
     private nonisolated static func prepare(
         task: AgentTaskReference,
-        destination: UsageProviderID,
+        destination: HandoffDestination,
         awaitingConfirmation: Bool
     ) -> HandoffPreparationResult {
         let transcript = readTranscript(task)
@@ -95,7 +123,7 @@ actor HandoffCoordinator {
             id: UUID().uuidString,
             createdAt: Date(),
             sourceAgent: sourceAgentName(task.provider),
-            targetAgent: destinationAgentName(destination),
+            targetAgent: destination.agentName,
             taskTitle: HandoffRedactor.sanitize(task.title),
             sessionID: task.sessionID,
             cwd: task.cwd,
@@ -132,6 +160,8 @@ actor HandoffCoordinator {
         case .codex:
             roots = [home.appendingPathComponent(".codex/sessions"),
                      home.appendingPathComponent(".codex/archived_sessions")]
+        case .deepseek:
+            roots = []
         }
         guard roots.map({ $0.standardizedFileURL.resolvingSymlinksInPath().path })
             .contains(where: { fileURL.path == $0 || fileURL.path.hasPrefix($0 + "/") }),
@@ -199,6 +229,23 @@ actor HandoffCoordinator {
         return NSWorkspace.shared.open(url)
     }
 
+    @MainActor private static func openWorkBuddy(cwd: String, instruction: String) -> Bool {
+        guard let url = HandoffInstructionBuilder.workBuddyURL(
+            cwd: cwd, instruction: instruction
+        ) else { return false }
+        return NSWorkspace.shared.open(url)
+    }
+
+    @MainActor private static func openWorkBuddyDesktop() {
+        guard let appURL = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: "com.workbuddy.workbuddy"
+        ) else { return }
+        NSWorkspace.shared.openApplication(
+            at: appURL,
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+    }
+
     @MainActor private static func copyToPasteboard(_ instruction: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(instruction, forType: .string)
@@ -211,10 +258,6 @@ actor HandoffCoordinator {
 
     private nonisolated static func sourceAgentName(_ provider: UsageProviderID) -> String {
         provider == .claude ? "Claude Code" : "Codex"
-    }
-
-    private nonisolated static func destinationAgentName(_ provider: UsageProviderID) -> String {
-        provider == .claude ? "Claude Desktop" : "Codex"
     }
 }
 
@@ -239,9 +282,9 @@ enum HandoffInstructionBuilder {
     static func make(
         packet: TaskHandoffPacketV1,
         packetPath: String,
-        destination: UsageProviderID
+        destination: HandoffDestination
     ) -> String {
-        let target = destination == .claude ? "Claude 桌面端" : "Codex"
+        let target = destination.agentName
         let changed = list(packet.changedFiles, empty: "无已识别的已修改文件")
         let untracked = list(packet.untrackedFiles, empty: "无已识别的未跟踪文件")
         let validations = list(packet.validationResults, empty: "未从可见进度中可靠提取")
@@ -316,6 +359,19 @@ enum HandoffInstructionBuilder {
         components.path = "/new"
         components.queryItems = [URLQueryItem(name: "q", value: instruction),
                                  URLQueryItem(name: "folder", value: cwd)]
+        return components.url
+    }
+
+    static func workBuddyURL(cwd: String, instruction: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = "workbuddy"
+        components.host = "task"
+        components.queryItems = [
+            URLQueryItem(name: "action", value: "start"),
+            URLQueryItem(name: "prompt", value: instruction),
+            URLQueryItem(name: "cwd", value: cwd),
+            URLQueryItem(name: "welcomeMode", value: "code"),
+        ]
         return components.url
     }
 

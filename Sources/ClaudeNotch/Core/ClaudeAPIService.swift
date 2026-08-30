@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import LocalAuthentication
 import CommonCrypto
 import SQLite3
 
@@ -81,7 +82,8 @@ actor ClaudeAPIService {
         //    touches a single Keychain item.
         for source in orderedSources() where Self.isAllowedFallbackSource(source.name) {
             if let until = backoffUntil[source.name], until > Date() { continue }
-            guard let cookies = readCookies(from: source),
+            let context = await touchIDContextIfAvailable(for: source.keychainService)
+            guard let cookies = readCookies(from: source, authenticationContext: context),
                   let org = cookies["lastActiveOrg"], cookies["sessionKey"] != nil
             else {
                 backoffUntil[source.name] = Date().addingTimeInterval(backoff)
@@ -102,7 +104,8 @@ actor ClaudeAPIService {
         // Claude Desktop's own OAuth token, cached in its config.json. This hits
         // api.anthropic.com, which serves no Cloudflare challenge — so it still works when the
         // claude.ai calls above are answered with one, which is what happens on many networks.
-        if let limits = await fetchFromDesktopOAuth() { return limits }
+        let context = await touchIDContextIfAvailable(for: "Claude Safe Storage")
+        if let limits = await fetchFromDesktopOAuth(authenticationContext: context) { return limits }
 
         // Never turn a failed Desktop read into another prompt for Chrome, Edge, or Claude Code.
         return nil
@@ -309,12 +312,12 @@ actor ClaudeAPIService {
     /// can have Desktop installed while the CLI is pointed at a third-party API base (and so has
     /// no Anthropic token at all). Read-only: the token is used while valid and never refreshed,
     /// so Desktop's own login is never disturbed.
-    private func fetchFromDesktopOAuth() async -> ClaudeLimits? {
+    private func fetchFromDesktopOAuth(authenticationContext: LAContext? = nil) async -> ClaudeLimits? {
         if let until = desktopTokenBackoffUntil, until > Date() { return nil }
         if let cached = desktopTokenCache, cached.expiresAt > Date() {
             return await usageWithCLIToken(cached.token, source: "Claude Desktop")
         }
-        guard let (token, expiresAt) = desktopOAuthToken() else {
+        guard let (token, expiresAt) = desktopOAuthToken(authenticationContext: authenticationContext) else {
             desktopTokenBackoffUntil = Date().addingTimeInterval(backoff)
             return nil
         }
@@ -327,14 +330,17 @@ actor ClaudeAPIService {
     /// keyed by account/device/scope; entries carry `token` and an `expiresAt` in epoch millis.
     /// We take the longest-lived unexpired entry, since Desktop keeps several with different
     /// scopes and lets the narrow ones lapse.
-    private func desktopOAuthToken() -> (token: String, expiresAt: Date)? {
+    private func desktopOAuthToken(authenticationContext: LAContext? = nil) -> (token: String, expiresAt: Date)? {
         let config = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Claude/config.json")
         guard let data = try? Data(contentsOf: config),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let encoded = root["oauth:tokenCache"] as? String,
               let blob = Data(base64Encoded: encoded),
-              let key = safeStorageKey(service: "Claude Safe Storage"),
+              let key = safeStorageKey(
+                  service: "Claude Safe Storage",
+                  authenticationContext: authenticationContext
+              ),
               let json = decrypt(blob, key: key),
               let entries = try? JSONSerialization.jsonObject(with: Data(json.utf8))
                 as? [String: Any]
@@ -373,7 +379,7 @@ actor ClaudeAPIService {
 
     // MARK: - cookie stores
 
-    private func readCookies(from source: Source) -> [String: String]? {
+    private func readCookies(from source: Source, authenticationContext: LAContext? = nil) -> [String: String]? {
         let fm = FileManager.default
         let suffixes = ["", "-wal", "-shm"]
         let base = fm.temporaryDirectory
@@ -401,14 +407,25 @@ actor ClaudeAPIService {
         }
         defer { sqlite3_close(handle) }
         if let service = source.keychainService {
-            return readChromium(handle, service: service)
+            return readChromium(
+                handle,
+                service: service,
+                authenticationContext: authenticationContext
+            )
         } else {
             return readFirefox(handle)
         }
     }
 
-    private func readChromium(_ db: OpaquePointer, service: String) -> [String: String]? {
-        guard let key = safeStorageKey(service: service) else { return nil }
+    private func readChromium(
+        _ db: OpaquePointer,
+        service: String,
+        authenticationContext: LAContext? = nil
+    ) -> [String: String]? {
+        guard let key = safeStorageKey(
+            service: service,
+            authenticationContext: authenticationContext
+        ) else { return nil }
         var stmt: OpaquePointer?
         let sql = "SELECT name, encrypted_value FROM cookies "
             + "WHERE host_key IN ('claude.ai', '.claude.ai')"
@@ -446,14 +463,55 @@ actor ClaudeAPIService {
     /// "wants to use your confidential information stored in …" prompt, so it must not run on
     /// every refresh. A denial is also remembered (as a backoff on the owning source) so the
     /// user isn't asked again a minute later.
-    private func safeStorageKey(service: String) -> Data? {
-        if let cached = keyCache[service] { return cached }   // includes a cached denial (nil)
+    private func touchIDContextIfAvailable(for service: String?) async -> LAContext? {
+        guard let service,
+              keyCache[service] == nil,
+              requiresInteractiveKeychainAccess(service: service)
+        else { return nil }
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+        else { return nil }
+        context.localizedFallbackTitle = "使用密码"
+        do {
+            let authenticated = try await context.evaluatePolicy(
+                .deviceOwnerAuthentication,
+                localizedReason: "使用 Touch ID 读取 Claude 凭据并更新用量"
+            )
+            return authenticated ? context : nil
+        } catch {
+            return nil
+        }
+    }
+
+    private func requiresInteractiveKeychainAccess(service: String) -> Bool {
+        let context = LAContext()
+        context.interactionNotAllowed = true
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationContext as String: context,
         ]
+        var item: CFTypeRef?
+        return SecItemCopyMatching(query as CFDictionary, &item) == errSecInteractionNotAllowed
+    }
+
+    private func safeStorageKey(
+        service: String,
+        authenticationContext: LAContext? = nil
+    ) -> Data? {
+        if let cached = keyCache[service] { return cached }   // includes a cached denial (nil)
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        if let authenticationContext {
+            query[kSecUseAuthenticationContext as String] = authenticationContext
+        }
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
               let pw = item as? Data else {

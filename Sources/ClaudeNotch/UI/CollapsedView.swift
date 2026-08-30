@@ -53,6 +53,14 @@ enum Fmt {
     }
     static func usd(_ v: Double) -> String { String(format: "$%.2f", v) }
 
+    static func amount(_ value: Double, currency: String) -> String {
+        switch currency {
+        case "CNY": return String(format: "¥%.2f", value)
+        case "USD": return String(format: "$%.2f", value)
+        default: return String(format: "%.2f %@", value, currency)
+        }
+    }
+
     /// Money from API minor units + ISO currency code, e.g. (4251, "EUR") -> "€42.51".
     /// Assumes 2 decimal places, which matches every currency claude.ai bills in.
     static func money(minor: Int, currency: String) -> String {

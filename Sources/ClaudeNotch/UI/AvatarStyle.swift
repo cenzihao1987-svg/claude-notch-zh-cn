@@ -2,8 +2,8 @@ import SwiftUI
 import ServiceManagement
 
 enum AppInfo {
-    static let version = "0.5.0"
-    static let tagline = "Claude 与 Codex"
+    static let version = "0.6.0"
+    static let tagline = "Claude、Codex 与 DeepSeek"
 }
 
 /// Launch-at-login toggle (only effective when running as a bundled .app).
@@ -38,7 +38,7 @@ enum AvatarStyle: String, CaseIterable, Identifiable {
 
     private static let key = "avatarStyle"
     static var selected: AvatarStyle {
-        get { AvatarStyle(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .clawd }
+        get { AvatarStyle(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .spark }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: key) }
     }
 }

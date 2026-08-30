@@ -7,14 +7,16 @@ struct WeekActivityChart: View {
     let series: [DailyUsagePoint]   // oldest first, today last
     var title = "近 7 天"
     var language: AppLanguage = .chinese
+    var currency: String? = nil
 
-    /// Dollar mode when any point carries a cost (Claude's local logs); token mode otherwise.
+    /// Money mode when any point carries a cost (Claude's local logs or imported DeepSeek CSV);
+    /// token mode otherwise.
     private var usesCost: Bool { series.contains { ($0.cost ?? 0) > 0 } }
     private func value(_ point: DailyUsagePoint) -> Double {
         usesCost ? (point.cost ?? 0) : Double(point.tokens)
     }
     private func label(_ value: Double) -> String {
-        usesCost ? Fmt.usd(value) : Fmt.tokens(Int(value))
+        usesCost ? Fmt.amount(value, currency: currency ?? "USD") : Fmt.tokens(Int(value))
     }
     private var total: Double { series.reduce(0) { $0 + value($1) } }
     private var maxValue: Double { series.map(value).max() ?? 0 }

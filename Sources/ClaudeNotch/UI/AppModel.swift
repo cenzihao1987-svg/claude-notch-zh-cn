@@ -15,6 +15,7 @@ final class AppModel {
 
     private(set) var snapshot: UsageSnapshot = .empty
     private(set) var codexSnapshot: ProviderUsageSnapshot = .unavailable(.codex)
+    private(set) var deepSeekSnapshot: ProviderUsageSnapshot = .unavailable(.deepseek)
     private(set) var codexWidgetSnapshot = CodexWidgetSnapshotStore.load()
     private(set) var selectedProvider = UsageProviderID(
         rawValue: UserDefaults.standard.string(forKey: "selectedProvider") ?? ""
@@ -73,6 +74,8 @@ final class AppModel {
     private let claudeAPI = ClaudeAPIService()
     private let desktopUsageCache = ClaudeDesktopUsageCache()
     private let codexProvider = CodexUsageProvider()
+    private let deepSeekProvider = DeepSeekUsageProvider()
+    private let deepSeekSpendHistoryStore = DeepSeekSpendHistoryStore()
     private let resetForecastService = CodexResetForecastService()
     private let lifetimeScanner = LifetimeScanner()
     private let activityReader = AgentActivityReader()
@@ -81,6 +84,7 @@ final class AppModel {
     private var ticker: Timer?
     private var limitsTimer: Timer?
     private var codexTimer: Timer?
+    private var deepSeekTimer: Timer?
     private var codexWidgetTimer: Timer?
     private var lifetimeTimer: Timer?
     private var activityTimer: Timer?
@@ -98,6 +102,15 @@ final class AppModel {
     private(set) var handoffStates: [String: HandoffStatus] = [:]
     private var handoffInstructions: [String: String] = [:]
     private var lastReingest = Date.distantPast
+    private var deepSeekAttemptedAt: Date?
+    private var deepSeekFailures = 0
+    private var deepSeekInFlight = false
+    private var deepSeekIsStale = false
+    private(set) var deepSeekSpendHistory: DeepSeekSpendHistory?
+    private(set) var deepSeekSpendError: String?
+    private var deepSeekPassiveSlots = Set(
+        UserDefaults.standard.stringArray(forKey: "deepSeekAutomaticScanSlotsV2") ?? []
+    )
 
     // MARK: display values (official account sources only)
 
@@ -119,7 +132,12 @@ final class AppModel {
     /// True when live limits exist but haven't refreshed recently (fetches failing) — the UI
     /// dims the numbers so a frozen value is never shown as if it were current.
     var isStale: Bool {
-        activeProviderSnapshot.isStale(after: Self.claudeUsageFreshAfter)
+        switch selectedProvider {
+        case .deepseek:
+            deepSeekIsStale || deepSeekSnapshot.isStale(after: Self.deepSeekCollapsedInterval)
+        case .claude, .codex:
+            activeProviderSnapshot.isStale(after: Self.claudeUsageFreshAfter)
+        }
     }
     nonisolated static let claudeUsageFreshAfter: TimeInterval = 150
 
@@ -163,6 +181,7 @@ final class AppModel {
         switch selectedProvider {
         case .claude: max(claudeSessionUsage ?? 0, weeklyUsage ?? 0)
         case .codex: codexSnapshot.maximumUsage
+        case .deepseek: 0
         }
     }
 
@@ -204,8 +223,15 @@ final class AppModel {
 
     var activeProviderSnapshot: ProviderUsageSnapshot {
         switch selectedProvider {
-        case .claude: claudeProviderSnapshot
-        case .codex: codexSnapshot
+        case .claude: return claudeProviderSnapshot
+        case .codex: return codexSnapshot
+        case .deepseek:
+            var snapshot = deepSeekSnapshot
+            if let history = deepSeekSpendHistory {
+                snapshot.dailySeries = history.lastSevenDays()
+                snapshot.chartTitle = language.text("近 7 天 · 消费", "Last 7 days · spend")
+            }
+            return snapshot
         }
     }
 
@@ -301,6 +327,9 @@ final class AppModel {
         codexTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTick, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tickCodexUsage() }
         }
+        deepSeekTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTick, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tickDeepSeekUsage() }
+        }
         codexWidgetTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.selectedProvider != .codex else { return }
@@ -314,6 +343,10 @@ final class AppModel {
         }
         fetchLimits()
         fetchCodexUsage(includeWhenInactive: true)
+        Task { [deepSeekSpendHistoryStore] in
+            self.deepSeekSpendHistory = await deepSeekSpendHistoryStore.load()
+        }
+        refreshDeepSeekPassiveDataIfNeeded()
         scanLifetime()
         lifetimeTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.scanLifetime() }
@@ -322,7 +355,12 @@ final class AppModel {
 
     func activityState(for provider: UsageProviderID) -> AgentActivityState {
         guard !isPaused else { return .idle }
-        let running = provider == .claude ? claudeRunning : codexRunning
+        let running: Bool
+        switch provider {
+        case .claude: running = claudeRunning
+        case .codex: running = codexRunning
+        case .deepseek: running = false
+        }
         return running ? (activityStates[provider] ?? .idle) : .idle
     }
 
@@ -336,37 +374,31 @@ final class AppModel {
         guard canHandoff(task) else {
             return language.text("先停止当前任务再接力", "Stop the current task before handing off")
         }
-        return task.destination == .claude
-            ? language.text("交给 Claude 桌面端", "Hand off to Claude Desktop")
-            : language.text("交给 Codex", "Hand off to Codex")
+        return language.text("选择接力目标", "Choose a handoff destination")
     }
 
-    func handoffLabel(_ task: AgentTaskReference) -> String {
-        if task.destination == .claude {
-            return language.text("交给 Claude", "To Claude")
-        }
-        return language.text("交给 Codex", "To Codex")
+    func handoffLabel() -> String {
+        language.text("接力", "Hand off")
     }
 
-    func handoff(_ task: AgentTaskReference) {
-        guard canHandoff(task) else { return }
+    func handoffDestinationLabel(_ destination: HandoffDestination) -> String {
+        destination.menuLabel(language: language)
+    }
+
+    func handoff(_ task: AgentTaskReference, to destination: HandoffDestination) {
+        guard canHandoff(task), task.handoffDestinations.contains(destination) else { return }
         let awaitingConfirmation = handoffActivityState(for: task.provider) == .awaitingConfirmation
         handoffStates[task.id] = .preparing
         Task { [handoffCoordinator] in
             let result = await handoffCoordinator.handoff(
                 task: task,
-                to: task.destination,
+                to: destination,
                 awaitingConfirmation: awaitingConfirmation
             )
             switch result {
             case let .opened(destination, _, instruction):
                 self.handoffInstructions[task.id] = instruction
-                let name = destination == .claude
-                    ? self.language.text("Claude 桌面端", "Claude Desktop")
-                    : "Codex"
-                self.settle(task.id, .opened(
-                    self.language.text("已交给 \(name)", "Handed off to \(name)")
-                ))
+                self.settle(task.id, .opened(destination.openedMessage(language: self.language)))
             case let .fallback(_, _, instruction, reason):
                 self.handoffInstructions[task.id] = instruction
                 self.settle(task.id, .fallback(reason))
@@ -441,6 +473,9 @@ final class AppModel {
         switch selectedProvider {
         case .claude: fetchLimits(force: true)   // fresh Desktop cache first; network if unavailable/stale
         case .codex: fetchCodexUsage()
+        case .deepseek:
+            refreshDeepSeekSpendHistory()
+            fetchDeepSeekUsage(force: true)
         }
     }
 
@@ -450,6 +485,7 @@ final class AppModel {
             refresh()
             fetchLimits()
             fetchCodexUsage()
+            refreshDeepSeekPassiveDataIfNeeded()
         }
     }
     /// 立刻拉取当前 provider（不 force，不清缓存、不重读 Keychain）。
@@ -457,6 +493,7 @@ final class AppModel {
         switch selectedProvider {
         case .claude: fetchLimits()
         case .codex: fetchCodexUsage()
+        case .deepseek: break  // DeepSeek reads automatically only at 09:00/21:00.
         }
     }
     /// `persist: false` 用于前台跟随的自动切换——只临时生效，不覆盖用户手动选择的记忆。
@@ -512,6 +549,7 @@ final class AppModel {
     /// 2026-08-17 先用过 15/45，把账号打到了 api.anthropic.com 的 429，回退到这一档。
     private static let refreshTick: TimeInterval = 30
     private static let collapsedInterval: TimeInterval = 90
+    private static let deepSeekCollapsedInterval: TimeInterval = 12 * 60 * 60
     /// 连续失败后的退避上限，与 ClaudeAPIService 里的 900 秒 backoff 同量级。
     private static let maxBackoff: TimeInterval = 900
 
@@ -555,6 +593,67 @@ final class AppModel {
         guard shouldRefreshCodex(since: last) else { return }
         Self.log.notice("codex, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
         fetchCodexUsage()
+    }
+
+    private func tickDeepSeekUsage() {
+        refreshDeepSeekPassiveDataIfNeeded()
+    }
+
+    /// DeepSeek is intentionally not fetched on tab switches or on every expansion. The only
+    /// automatic reads are one catch-up per local morning (09:00) and evening (21:00).
+    private func refreshDeepSeekPassiveDataIfNeeded(now: Date = Date()) {
+        guard !isPaused, let slot = Self.deepSeekPassiveSlot(for: now), !deepSeekPassiveSlots.contains(slot) else { return }
+        deepSeekPassiveSlots.insert(slot)
+        UserDefaults.standard.set(Array(deepSeekPassiveSlots.sorted().suffix(4)), forKey: "deepSeekAutomaticScanSlotsV2")
+        refreshDeepSeekSpendHistory()
+        fetchDeepSeekUsage(force: true, includeWhenInactive: true)
+    }
+
+    static func deepSeekPassiveSlot(for date: Date, calendar: Calendar = .current) -> String? {
+        let parts = calendar.dateComponents([.year, .month, .day, .hour], from: date)
+        guard let hour = parts.hour, hour >= 9 else { return nil }
+        let period = hour >= 21 ? "evening" : "morning"
+        guard let year = parts.year, let month = parts.month, let day = parts.day else { return nil }
+        return String(format: "%04d-%02d-%02d-%@", year, month, day, period)
+    }
+
+    func fetchDeepSeekUsage(force: Bool = false, includeWhenInactive: Bool = false) {
+        guard !isPaused, (selectedProvider == .deepseek || includeWhenInactive), !deepSeekInFlight else { return }
+        let sinceAttempt = deepSeekAttemptedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        guard force || sinceAttempt >= Self.deepSeekCollapsedInterval else { return }
+        deepSeekInFlight = true
+        deepSeekAttemptedAt = Date()
+        Task { [deepSeekProvider] in
+            let result = await deepSeekProvider.fetch()
+            self.deepSeekInFlight = false
+            switch result {
+            case let .success(snapshot):
+                self.deepSeekSnapshot = snapshot
+                self.deepSeekFailures = 0
+                self.deepSeekIsStale = false
+            case let .failure(error):
+                self.deepSeekFailures += 1
+                self.deepSeekIsStale = true
+                if self.deepSeekSnapshot.fetchedAt == nil {
+                    self.deepSeekSnapshot = .unavailable(.deepseek, message: error.message)
+                } else {
+                    self.deepSeekSnapshot.statusMessage = error.message
+                }
+            }
+        }
+    }
+
+    private func refreshDeepSeekSpendHistory() {
+        Task { [deepSeekSpendHistoryStore] in
+            do {
+                self.deepSeekSpendHistory = try await deepSeekSpendHistoryStore.refreshLatestExport()
+                self.deepSeekSpendError = nil
+            } catch let error as DeepSeekSpendImportError {
+                self.deepSeekSpendError = error.message
+            } catch {
+                self.deepSeekSpendError = DeepSeekSpendImportError.unreadableFile.message
+            }
+        }
     }
 
     /// Fetch live claude.ai limits off-main (Keychain prompt appears on first run).

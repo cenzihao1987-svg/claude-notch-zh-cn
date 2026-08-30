@@ -41,6 +41,7 @@ actor AgentActivityReader {
                 ? state(for: claudeAuditURL, parser: claudeAuditState)
                 : state(for: claudeURL, parser: Self.claudeState),
             .codex: state(for: codexURL, parser: codexState),
+            .deepseek: .idle,
         ]
     }
 
