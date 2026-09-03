@@ -9,6 +9,7 @@ enum HandoffTranscriptParser {
         switch provider {
         case .claude: context = parseClaude(objects)
         case .codex: context = parseCodex(objects)
+        case .workbuddy: context = parseWorkBuddy(objects)
         case .deepseek: context = .init()
         }
         return HandoffTranscriptContext(
@@ -77,6 +78,38 @@ enum HandoffTranscriptParser {
         )
     }
 
+    private static func parseWorkBuddy(_ objects: [[String: Any]]) -> HandoffTranscriptContext {
+        var userMessages: [String] = []
+        var agentMessages: [String] = []
+
+        for object in objects {
+            guard object["type"] as? String == "message",
+                  let role = object["role"] as? String else { continue }
+            let text: String
+            switch role {
+            case "user":
+                let source = visibleText(from: object["content"], allowedTypes: ["input_text", "text"])
+                // WorkBuddy wraps user prompts with a system reminder containing environment,
+                // connectors and automation metadata. Only its explicit user-query is safe to
+                // carry into another agent.
+                text = embeddedUserQuery(in: source) ?? (isInjectedInstruction(source) ? "" : source)
+                if !text.isEmpty { userMessages.append(text) }
+            case "assistant":
+                text = visibleText(from: object["content"], allowedTypes: ["output_text", "text"])
+                if !text.isEmpty { agentMessages.append(text) }
+            default:
+                continue
+            }
+        }
+
+        let progress = agentMessages.last.map { capped($0, at: 1_800) }
+        return HandoffTranscriptContext(
+            latestUserGoal: latestGoal(in: userMessages),
+            recentAgentProgress: progress,
+            validationResults: validationLines(in: progress)
+        )
+    }
+
     private static func visibleText(from value: Any?, allowedTypes: Set<String>) -> String {
         if let text = value as? String {
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -107,6 +140,14 @@ enum HandoffTranscriptParser {
             || trimmed.hasPrefix("<local-command-caveat>")
             || trimmed.hasPrefix("<command-name>")
             || trimmed.hasPrefix("<environment_context>")
+    }
+
+    private static func embeddedUserQuery(in text: String) -> String? {
+        guard let start = text.range(of: "<user_query>"),
+              let end = text.range(of: "</user_query>", range: start.upperBound..<text.endIndex)
+        else { return nil }
+        return String(text[start.upperBound..<end.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func validationLines(in progress: String?) -> [String] {

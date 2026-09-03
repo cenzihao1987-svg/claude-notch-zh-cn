@@ -6,18 +6,50 @@ private enum CodexRequestID {
 
 actor CodexUsageProvider {
     private let transport = CodexAppServerTransport()
+    private let modelUsageReader = CodexModelUsageReader()
     /// The transport blocks on pipe reads behind NSCondition waits (worst case ~20s of timeouts),
     /// so it runs on its own utility queue. It must never run on the cooperative pool — actors
     /// execute there, and blocking a cooperative thread starves every other task in the app.
     private static let transportQueue = DispatchQueue(label: "codex-app-server", qos: .utility)
 
-    func fetch(forecast: CodexResetForecast? = nil) async -> ProviderUsageSnapshot {
+    func fetch(
+        forecast: CodexResetForecast? = nil,
+        includeModelBreakdown: Bool = false
+    ) async -> ProviderUsageSnapshot {
+        let modelTask: Task<[DailyUsagePoint]?, Never>? = includeModelBreakdown
+            ? Task { [modelUsageReader] in await modelUsageReader.fetch() }
+            : nil
         let transport = transport
-        return await withCheckedContinuation { continuation in
+        var snapshot = await withCheckedContinuation { continuation in
             Self.transportQueue.async {
                 continuation.resume(returning: Self.snapshot(using: transport, forecast: forecast))
             }
         }
+        if let modelTask, let modelSeries = await modelTask.value {
+            snapshot = Self.applyingModelUsage(modelSeries, to: snapshot)
+        }
+        return snapshot
+    }
+
+    static func applyingModelUsage(
+        _ modelSeries: [DailyUsagePoint],
+        to snapshot: ProviderUsageSnapshot,
+        calendar: Calendar = .current
+    ) -> ProviderUsageSnapshot {
+        guard modelSeries.count == 7, modelSeries.allSatisfy({ $0.modelUsage != nil }) else {
+            return snapshot
+        }
+        var result = snapshot
+        result.dailySeries = modelSeries.map { modelPoint in
+            guard let accountPoint = snapshot.dailySeries.first(where: {
+                calendar.isDate($0.date, inSameDayAs: modelPoint.date)
+            }) else { return modelPoint }
+            var merged = accountPoint
+            merged.modelUsage = modelPoint.modelUsage
+            return merged
+        }
+        result.chartTitle = "last 7 days · plan usage"
+        return result
     }
 
     private static func snapshot(

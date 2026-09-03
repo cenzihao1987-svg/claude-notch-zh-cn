@@ -3,6 +3,7 @@ import Foundation
 enum UsageProviderID: String, CaseIterable, Identifiable, Sendable {
     case claude
     case codex
+    case workbuddy
     case deepseek
 
     var id: String { rawValue }
@@ -11,6 +12,7 @@ enum UsageProviderID: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: "Claude"
         case .codex: "Codex"
+        case .workbuddy: "WorkBuddy"
         case .deepseek: "DeepSeek"
         }
     }
@@ -19,6 +21,7 @@ enum UsageProviderID: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: "sparkles"
         case .codex: "terminal.fill"
+        case .workbuddy: "person.2.fill"
         case .deepseek: "bubble.left.and.bubble.right.fill"
         }
     }
@@ -54,12 +57,21 @@ struct UsageSessionMetric: Equatable, Sendable, Identifiable {
     var taskReference: AgentTaskReference? = nil
 }
 
-/// One day of activity for the week chart. `cost` set (Claude's local logs) makes the chart
-/// render dollars; otherwise it renders `tokens` (Codex's account feed).
+struct ModelUsageSegment: Equatable, Sendable, Identifiable {
+    let model: String
+    let value: Double
+    var id: String { model }
+}
+
+/// One day of activity for the week chart. `cost` makes the chart render money, `credits`
+/// renders WorkBuddy points, `modelUsage` renders Codex's official plan-usage breakdown,
+/// otherwise it renders `tokens`. A non-nil empty `modelUsage` is a valid zero-usage day.
 struct DailyUsagePoint: Equatable, Sendable, Identifiable {
     let date: Date
     let tokens: Int
     var cost: Double? = nil
+    var credits: Double? = nil
+    var modelUsage: [ModelUsageSegment]? = nil
     var id: Date { date }
 }
 

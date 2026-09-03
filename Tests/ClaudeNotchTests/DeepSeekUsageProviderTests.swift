@@ -78,8 +78,8 @@ import Testing
         #expect(snapshot.stats.last?.value == "unavailable")
     }
 
-    @Test func providerOrderAddsDeepSeekAfterCodex() {
-        #expect(UsageProviderID.allCases == [.claude, .codex, .deepseek])
+    @Test func providerOrderPlacesWorkBuddyBeforeDeepSeek() {
+        #expect(UsageProviderID.allCases == [.claude, .codex, .workbuddy, .deepseek])
     }
 
     @Test func liveOfficialBalanceWhenExplicitlyRequested() async {

@@ -274,6 +274,11 @@ struct IslandView: View {
         icon.isTemplate = true
         return icon
     }()
+    @MainActor private static let workBuddyIcon: NSImage? = {
+        guard let icon = resourceImage(named: "workbuddy") else { return nil }
+        icon.isTemplate = true
+        return icon
+    }()
 
     @MainActor private static func resourceImage(named name: String) -> NSImage? {
         if let resourcesURL = Bundle.main.resourceURL,
@@ -310,62 +315,6 @@ struct IslandView: View {
         }
         .animation(.spring(response: 0.6, dampingFraction: 1.0), value: expanded)
         .animation(.easeInOut(duration: 0.3), value: displayedUsage)
-    }
-
-    @ViewBuilder private var settingsMenu: some View {
-        Button(language.text("立即刷新", "Refresh now")) { model.refreshNow() }
-        Button(model.isPaused
-            ? language.text("恢复监测", "Resume monitoring")
-            : language.text("暂停监测", "Pause monitoring")) { model.togglePause() }
-        Menu(language.text("图标", "Icon")) {
-            ForEach(AvatarStyle.allCases) { style in
-                Button {
-                    model.setAvatar(style)
-                } label: {
-                    if model.avatarStyle == style {
-                        Label(avatarLabel(style), systemImage: "checkmark")
-                    } else {
-                        Text(avatarLabel(style))
-                    }
-                }
-            }
-        }
-        Menu(language.text("语言", "Language")) {
-            ForEach(AppLanguage.allCases) { item in
-                Button {
-                    model.setLanguage(item)
-                } label: {
-                    if language == item {
-                        Label(item.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(item.displayName)
-                    }
-                }
-            }
-        }
-        Button((model.claudeCredentialFallbackEnabled ? "✓ " : "")
-            + language.text("Claude 备用获取（Touch ID 优先）",
-                            "Claude fallback access (Touch ID preferred)")) {
-            model.toggleClaudeCredentialFallback()
-        }
-        Button((model.animateIcon ? "✓ " : "") + language.text("图标动画", "Animate icon")) {
-            model.toggleAnimateIcon()
-        }
-        Button((model.hideInFullscreen ? "✓ " : "")
-            + language.text("全屏时隐藏", "Hide in full screen")) { model.toggleHideInFullscreen() }
-        Button((model.showDesktopWidget ? "✓ " : "")
-            + language.text("Codex 桌面小组件", "Codex desktop widget")) {
-            model.toggleDesktopWidget()
-        }
-        Button((LoginItem.isEnabled ? "✓ " : "")
-            + language.text("开机自启", "Launch at login")) { LoginItem.toggle() }
-        Divider()
-        Button(language.text("检查更新…", "Check for updates…")) { Updater.shared.checkForUpdates() }
-        Divider()
-        Button("Claude Notch v\(AppInfo.version) — "
-            + language.text(AppInfo.tagline, "Claude & Codex")) {}.disabled(true)
-        Divider()
-        Button(language.text("退出", "Quit")) { NSApp.terminate(nil) }
     }
 
     // MARK: top row
@@ -433,14 +382,6 @@ struct IslandView: View {
         }
     }
 
-    private func avatarLabel(_ style: AvatarStyle) -> String {
-        switch style {
-        case .clawd: "Clawd"
-        case .clawdWhite: language.text("Clawd（单色）", "Clawd (Mono)")
-        case .spark: "Spark"
-        }
-    }
-
     private func providerButton(_ item: UsageProviderID) -> some View {
         let selected = model.selectedProvider == item
         return providerIcon(for: item)
@@ -491,11 +432,11 @@ struct IslandView: View {
                         .foregroundStyle(.white)
                     Ring(
                         fraction: displayedUsage,
-                        state: model.selectedProvider == .codex
+                        state: showsRemainingUsage
                             ? remainingRingState(for: displayedUsage)
                             : ringState(for: used),
                         lineWidth: 3,
-                        drainsClockwise: model.selectedProvider == .codex
+                        drainsClockwise: showsRemainingUsage
                     )
                         .frame(width: 14, height: 14)
                 }
@@ -514,8 +455,8 @@ struct IslandView: View {
     }
 
     private var settingsButton: some View {
-        Menu {
-            settingsMenu
+        Button {
+            SettingsWindow.present(model: model)
         } label: {
             Image(systemName: "gearshape")
                 .font(.system(size: 13, weight: .medium))
@@ -524,14 +465,12 @@ struct IslandView: View {
                 .background(Color.white.opacity(0.10), in: Circle())
                 .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .buttonStyle(.plain)
         .help(language.text("设置", "Settings"))
         .accessibilityLabel(language.text("设置", "Settings"))
         .accessibilityHint(language.text(
-            "打开 Claude Notch 设置菜单",
-            "Open Claude Notch settings menu"
+            "打开 Claude Notch 设置窗口",
+            "Open the Claude Notch settings window"
         ))
     }
 
@@ -556,6 +495,12 @@ struct IslandView: View {
                 .resizable()
                 .scaledToFit()
                 .foregroundStyle(.white.opacity(model.isPaused ? 0.45 : 0.9))
+        } else if item == .workbuddy, let icon = Self.workBuddyIcon {
+            Image(nsImage: icon)
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(.white.opacity(model.isPaused ? 0.45 : 0.9))
+                .opacity(model.isPaused ? 0.45 : 1)
         } else if let symbol = NSImage(
             systemSymbolName: item.systemImage,
             accessibilityDescription: item.displayName
@@ -584,6 +529,8 @@ struct IslandView: View {
     @ViewBuilder private var singlePage: some View {
         if provider.provider == .deepseek {
             deepSeekPage
+        } else if provider.provider == .workbuddy {
+            workBuddyPage
         } else {
             providerDashboard
         }
@@ -597,7 +544,6 @@ struct IslandView: View {
         let columnCount = snapshot.provider == .codex ? 2 : (tileCount > 4 ? 3 : (tileCount > 2 ? 2 : 1))
         let summaryWidth: CGFloat = columnCount == 3 ? 380 : 270
         let chartWidth = contentWidth - summaryWidth - 8
-        let hasStatus = snapshot.statusMessage != nil || model.isStale
         let summaryItems = limits.map(SummaryTileItem.limit) + stats.map(SummaryTileItem.stat)
         return VStack(spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
@@ -607,14 +553,17 @@ struct IslandView: View {
                 WeekActivityChart(
                     series: snapshot.dailySeries,
                     title: localizedTitle(snapshot.chartTitle),
-                    language: language
+                    language: language,
+                    note: snapshot.dailySeries.contains { $0.modelUsage != nil }
+                        ? language.text("最多延迟 6 小时", "up to 6 h delay")
+                        : nil
                 )
                     .frame(width: chartWidth, height: 136)
                     .opacity(model.isStale ? 0.55 : 1)
             }
             .frame(width: contentWidth, height: 136, alignment: .topLeading)
             .padding(.bottom, 4)
-            sessionsBlock(limit: hasStatus ? 1 : 2).frame(width: contentWidth)
+            sessionsBlock(limit: AppModel.expandedTaskLimit).frame(width: contentWidth)
             if let message = snapshot.statusMessage {
                 Text(localizedStatus(message)).font(.system(size: 10))
                     .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
@@ -678,6 +627,53 @@ struct IslandView: View {
         .frame(width: contentWidth, alignment: .topLeading)
     }
 
+    private var workBuddyPage: some View {
+        let snapshot = provider
+        let items = snapshot.stats.map(SummaryTileItem.stat)
+        let summaryWidth: CGFloat = 270
+        let chartWidth = contentWidth - summaryWidth - 8
+        return VStack(alignment: .leading, spacing: 8) {
+            if items.isEmpty {
+                tile(language.text("WorkBuddy 状态", "WorkBuddy status"),
+                     localizedStatus(snapshot.statusMessage ?? "未找到 WorkBuddy 数据"), height: .compact)
+                    .frame(width: contentWidth, height: 136)
+            } else {
+                HStack(alignment: .top, spacing: 8) {
+                    summaryGrid(items: items, columnCount: 2)
+                        .frame(width: summaryWidth, height: 136, alignment: .topLeading)
+                    if snapshot.dailySeries.isEmpty {
+                        tile(language.text("近 7 天 · 本机消耗", "Last 7 days · local usage"),
+                             language.text("无法读取 WorkBuddy 本机积分记录",
+                                           "Unable to read local WorkBuddy credit records"),
+                             height: .compact)
+                            .frame(width: chartWidth, height: 136)
+                    } else {
+                        WeekActivityChart(
+                            series: snapshot.dailySeries,
+                            title: localizedTitle(snapshot.chartTitle),
+                            language: language
+                        )
+                        .frame(width: chartWidth, height: 136)
+                    }
+                }
+                .frame(width: contentWidth, height: 136, alignment: .topLeading)
+                    .opacity(model.isStale ? 0.55 : 1)
+            }
+            sessionsBlock(limit: AppModel.expandedTaskLimit).frame(width: contentWidth)
+            if let message = snapshot.statusMessage {
+                Text(localizedStatus(message)).font(.system(size: 10))
+                    .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1).truncationMode(.tail)
+            } else if model.isStale {
+                Text(language.text("正在重新连接…", "Reconnecting…")).font(.system(size: 10))
+                    .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: contentWidth, alignment: .topLeading)
+    }
+
     private func deepSeekFooter(_ snapshot: ProviderUsageSnapshot) -> String {
         if let message = snapshot.statusMessage { return localizedStatus(message) }
         if let message = model.deepSeekSpendError { return localizedStatus(message) }
@@ -718,6 +714,7 @@ struct IslandView: View {
         switch model.selectedProvider {
         case .claude: language.text("Claude 用量", "Claude usage")
         case .codex: language.text("Codex 剩余额度", "Codex remaining quota")
+        case .workbuddy: language.text("WorkBuddy 剩余积分", "WorkBuddy remaining credits")
         case .deepseek: language.text("DeepSeek 剩余余额", "DeepSeek remaining balance")
         }
     }
@@ -780,8 +777,14 @@ struct IslandView: View {
     private func sessionRow(_ session: UsageSessionMetric?, placeholder: String,
                             muted: Bool) -> some View {
         let task = session?.taskReference
+        let project: String
+        if session?.name == "Untitled task" {
+            project = language.text("未命名任务", "Untitled task")
+        } else {
+            project = session?.name ?? placeholder
+        }
         return HandoffSessionRow(
-            project: session?.name ?? placeholder,
+            project: project,
             cost: session?.cost,
             tokens: session?.tokens,
             last: session?.last,
@@ -854,7 +857,7 @@ struct IslandView: View {
         minHeight: CGFloat = 64
     ) -> some View {
         let isClaudeSession = metric.id == "claude-session"
-        let label = localizedLimitLabel(metric.label) + (model.selectedProvider == .codex
+        let label = localizedLimitLabel(metric.label) + (showsRemainingUsage
             ? language.text(" · 剩余", " · remaining")
             : "")
         limitTile(label, displayFraction(metric.usedFraction), resets: metric.resetsAt,
@@ -896,7 +899,11 @@ struct IslandView: View {
 
     private func displayFraction(_ usedFraction: Double?) -> Double? {
         guard let usedFraction else { return nil }
-        return model.selectedProvider == .codex ? 1 - usedFraction : usedFraction
+        return showsRemainingUsage ? 1 - usedFraction : usedFraction
+    }
+
+    private var showsRemainingUsage: Bool {
+        model.selectedProvider == .codex || model.selectedProvider == .workbuddy
     }
 
     enum TileHeight { case compact, tall
@@ -975,6 +982,7 @@ struct IslandView: View {
         case "Monthly", "每月": localizedDuration = language.text("每月", "Monthly")
         case "Annual", "每年": localizedDuration = language.text("每年", "Annual")
         case "Limit", "额度": localizedDuration = language.text("额度", "Limit")
+        case "credits": localizedDuration = language.text("积分", "Credits")
         default:
             if duration.hasSuffix("-Hour"), let value = Int(duration.dropLast(5)) {
                 localizedDuration = language.text("\(value) 小时", "\(value) hours")
@@ -996,6 +1004,10 @@ struct IslandView: View {
         case "deepseek-topped-up-balance": language.text("充值余额", "Topped-up balance")
         case "deepseek-granted-balance": language.text("赠金余额", "Granted balance")
         case "deepseek-api-status": language.text("API 状态", "API status")
+        case "workbuddy-remaining": language.text("剩余积分", "Remaining credits")
+        case "workbuddy-used": language.text("已用积分", "Used credits")
+        case "workbuddy-plan": language.text("当前套餐", "Plan")
+        case "workbuddy-refresh": language.text("刷新时间", "Refresh")
         case "tokens-today": language.text("今日 Token · 账号", "Today · account")
         case "tokens-yesterday": language.text("昨日 Token · 账号", "Yesterday · account")
         case "credits": language.text("可用额度", "Available credits")
@@ -1012,6 +1024,7 @@ struct IslandView: View {
         if metric.value == "available" { return language.text("可用", "Available") }
         if metric.value == "unavailable" { return language.text("不可用", "Unavailable") }
         if metric.value == "none" { return language.text("无", "None") }
+        if metric.id == "credits" { return Self.formattedCodexCredits(metric.value) }
         if metric.id == "longest-task" {
             guard language == .chinese else { return metric.value }
             return metric.value.replacingOccurrences(of: "h", with: "小时")
@@ -1029,8 +1042,15 @@ struct IslandView: View {
             .trimmingCharacters(in: .whitespaces)
     }
 
+    static func formattedCodexCredits(_ value: String) -> String {
+        guard let number = Double(value) else { return value }
+        return String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), number)
+    }
+
     private func localizedStatSubtitle(_ metric: UsageStatMetric) -> String? {
-        guard let subtitle = metric.subtitle, language == .english else { return metric.subtitle }
+        guard let subtitle = metric.subtitle else { return nil }
+        if subtitle == "expires" { return language.text("到期时间", "Expires at this time") }
+        guard language == .english else { return subtitle }
         if subtitle == "点击查看详情" { return "Click for details" }
         if subtitle.hasPrefix("平均 "), subtitle.hasSuffix(" 天一轮") {
             let value = subtitle.dropFirst(3).dropLast(4)
@@ -1064,8 +1084,12 @@ struct IslandView: View {
             language.text("近 7 天 · 本地", "Last 7 days · local")
         case "last 7 days · account", "近 7 天 · 账号":
             language.text("近 7 天 · 账号", "Last 7 days · account")
+        case "last 7 days · plan usage", "近 7 天 · 套餐用量":
+            language.text("近 7 天 · 套餐用量", "Last 7 days · plan usage")
         case "last 7 days · spend", "近 7 天 · 消费":
             language.text("近 7 天 · 消费", "Last 7 days · spend")
+        case "last 7 days · local credits", "近 7 天 · 本机消耗":
+            language.text("近 7 天 · 本机消耗", "Last 7 days · local usage")
         case "active sessions", "活跃会话": language.text("活跃会话", "Active sessions")
         case "all-time · top projects", "累计 · 高频项目":
             language.text("累计 · 高频项目", "All-time · top projects")
@@ -1075,7 +1099,10 @@ struct IslandView: View {
     }
 
     private func localizedStatus(_ message: String) -> String {
-        switch message {
+        if message.contains(" · ") {
+            return message.components(separatedBy: " · ").map(localizedStatus).joined(separator: " · ")
+        }
+        return switch message {
         case "Spend limit reached", "已达消费上限":
             language.text("已达消费上限", "Spend limit reached")
         case "Account usage requires ChatGPT sign-in", "需登录 ChatGPT 才能查看账号用量":
@@ -1091,6 +1118,24 @@ struct IslandView: View {
         case "DeepSeek 服务暂不可用": language.text("DeepSeek 服务暂不可用", "DeepSeek service is unavailable")
         case "DeepSeek 返回格式无效": language.text("DeepSeek 返回格式无效", "DeepSeek response is invalid")
         case "无法连接 DeepSeek": language.text("无法连接 DeepSeek", "Unable to connect to DeepSeek")
+        case "未找到 WorkBuddy 登录信息":
+            language.text("未找到 WorkBuddy 登录信息", "WorkBuddy sign-in information not found")
+        case "WorkBuddy 登录信息无效":
+            language.text("WorkBuddy 登录信息无效", "WorkBuddy sign-in information is invalid")
+        case "WorkBuddy 登录已过期，请打开 WorkBuddy":
+            language.text("WorkBuddy 登录已过期，请打开 WorkBuddy", "WorkBuddy sign-in expired; open WorkBuddy")
+        case "WorkBuddy 登录已失效，请打开 WorkBuddy":
+            language.text("WorkBuddy 登录已失效，请打开 WorkBuddy", "WorkBuddy sign-in expired; open WorkBuddy")
+        case "WorkBuddy 请求过于频繁": language.text("WorkBuddy 请求过于频繁", "WorkBuddy is rate limited")
+        case "WorkBuddy 服务暂不可用": language.text("WorkBuddy 服务暂不可用", "WorkBuddy service is unavailable")
+        case "WorkBuddy 用量返回格式无效":
+            language.text("WorkBuddy 用量返回格式无效", "WorkBuddy usage response is invalid")
+        case "无法连接 WorkBuddy": language.text("无法连接 WorkBuddy", "Unable to connect to WorkBuddy")
+        case "无法读取 WorkBuddy 近期任务":
+            language.text("无法读取 WorkBuddy 近期任务", "Unable to read WorkBuddy recent tasks")
+        case "无法读取 WorkBuddy 本机积分记录":
+            language.text("无法读取 WorkBuddy 本机积分记录", "Unable to read local WorkBuddy credit records")
+        case "未找到 WorkBuddy 数据": language.text("未找到 WorkBuddy 数据", "WorkBuddy data not found")
         case "无法读取 DeepSeek 用量 CSV": language.text("无法读取 DeepSeek 用量 CSV", "Unable to read DeepSeek usage CSV")
         case "DeepSeek 用量 CSV 格式无效": language.text("DeepSeek 用量 CSV 格式无效", "DeepSeek usage CSV is invalid")
         case "DeepSeek 用量 CSV 缺少日期列": language.text("DeepSeek 用量 CSV 缺少日期列", "DeepSeek usage CSV has no date column")

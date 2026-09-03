@@ -72,6 +72,41 @@ import Testing
         #expect(!String(describing: context).contains("原始命令输出"))
     }
 
+    @Test func workBuddyKeepsOnlyExplicitUserQueryAndVisibleAnswer() throws {
+        let data = try jsonLines([
+            [
+                "type": "message",
+                "role": "user",
+                "content": [["type": "input_text", "text": """
+                <system-reminder>Workspace Folder: /private/project\nAuthorization: Bearer hidden-token</system-reminder>
+                <user_query>继续完成接力，token=visible-secret-value</user_query>
+                """],],
+            ],
+            [
+                "type": "reasoning",
+                "rawContent": [["type": "reasoning_text", "text": "不应读取的内部推理"]],
+            ],
+            [
+                "type": "message",
+                "role": "assistant",
+                "content": [["type": "output_text", "text": "接力包已整理；swift test 通过。"]],
+            ],
+            [
+                "type": "function_call_result",
+                "output": ["text": "不应读取的工具输出"],
+            ],
+        ])
+
+        let context = HandoffTranscriptParser.parse(data: data, provider: .workbuddy)
+
+        #expect(context.latestUserGoal == "继续完成接力，token=[已脱敏]")
+        #expect(context.recentAgentProgress == "接力包已整理；swift test 通过。")
+        #expect(context.validationResults == ["接力包已整理；swift test 通过。"])
+        #expect(!String(describing: context).contains("Workspace Folder"))
+        #expect(!String(describing: context).contains("内部推理"))
+        #expect(!String(describing: context).contains("工具输出"))
+    }
+
     @Test func corruptedAndEmptyLinesDegradeToEmptyContext() {
         let context = HandoffTranscriptParser.parse(
             data: Data("not-json\n{}\n".utf8), provider: .codex
@@ -111,9 +146,14 @@ import Testing
             provider: .claude, sessionID: "a1", title: "Claude task",
             cwd: "/tmp/project", transcriptPath: nil
         )
+        let workBuddy = AgentTaskReference(
+            provider: .workbuddy, sessionID: "w1", title: "WorkBuddy task",
+            cwd: "/tmp/project", transcriptPath: "/tmp/workbuddy.jsonl"
+        )
 
         #expect(codex.handoffDestinations == [.claudeDesktop, .workBuddy])
         #expect(claude.handoffDestinations == [.codex, .workBuddy])
+        #expect(workBuddy.handoffDestinations == [.claudeDesktop, .codex])
         #expect(HandoffDestination.workBuddy.agentName == "WorkBuddy")
         #expect(HandoffDestination.workBuddy.menuLabel(language: .chinese) == "交给 WorkBuddy")
         #expect(HandoffDestination.workBuddy.menuLabel(language: .english) == "To WorkBuddy")

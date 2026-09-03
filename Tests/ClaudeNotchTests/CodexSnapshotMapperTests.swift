@@ -30,6 +30,13 @@ import Testing
         #expect(IslandView.summaryRowItemCounts(itemCount: 2, columnCount: 2) == [2])
     }
 
+    @MainActor @Test func formatsAvailableCreditsToTwoDecimalPlaces() {
+        #expect(IslandView.formattedCodexCredits("500") == "500.00")
+        #expect(IslandView.formattedCodexCredits("12.5") == "12.50")
+        #expect(IslandView.formattedCodexCredits("12.567") == "12.57")
+        #expect(IslandView.formattedCodexCredits("available") == "available")
+    }
+
     @Test func liveAppServerExchangeWhenRequested() async {
         guard ProcessInfo.processInfo.environment["CODEX_NOTCH_RUN_INTEGRATION_TEST"] == "1" else {
             return

@@ -66,7 +66,9 @@ final class IslandWindow {
     private let model: AppModel
     let presentation: IslandPresentationState
     private(set) var screen: NSScreen
-    private let panelHeight: CGFloat = 300
+    // The island can now render three recent-task rows plus a status line without clipping.
+    // This is only the transparent click-through host; the visible island remains content-sized.
+    private let panelHeight: CGFloat = 380
     private var hoverExitAt: Date?
     private var ignoreHoverExitUntil: Date?
     private var requireTriggerExit = false

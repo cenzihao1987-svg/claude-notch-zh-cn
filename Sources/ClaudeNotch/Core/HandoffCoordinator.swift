@@ -160,6 +160,8 @@ actor HandoffCoordinator {
         case .codex:
             roots = [home.appendingPathComponent(".codex/sessions"),
                      home.appendingPathComponent(".codex/archived_sessions")]
+        case .workbuddy:
+            roots = [home.appendingPathComponent(".workbuddy/projects")]
         case .deepseek:
             roots = []
         }
@@ -257,7 +259,12 @@ actor HandoffCoordinator {
     }
 
     private nonisolated static func sourceAgentName(_ provider: UsageProviderID) -> String {
-        provider == .claude ? "Claude Code" : "Codex"
+        switch provider {
+        case .claude: "Claude Code"
+        case .codex: "Codex"
+        case .workbuddy: "WorkBuddy"
+        case .deepseek: "DeepSeek"
+        }
     }
 }
 

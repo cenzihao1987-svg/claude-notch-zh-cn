@@ -24,10 +24,12 @@ extension NSScreen {
 final class AppMonitor {
     var claudeRunning = false
     var codexRunning = false
+    var workBuddyRunning = false
 
     private let claudeBundleIDs = ["com.anthropic.claudefordesktop", "com.anthropic.claude"]
     /// ChatGPT.app 的真实 bundle id，实测确认——按常识猜 com.openai.chat 会猜错。
     private let codexBundleIDs = ["com.openai.codex"]
+    private let workBuddyBundleIDs = ["com.workbuddy.workbuddy"]
     private var onChange: (() -> Void)?
     private var onFrontmostProvider: ((UsageProviderID) -> Void)?
 
@@ -64,6 +66,8 @@ final class AppMonitor {
             onFrontmostProvider?(.claude)
         } else if codexBundleIDs.contains(bundleID) {
             onFrontmostProvider?(.codex)
+        } else if workBuddyBundleIDs.contains(bundleID) {
+            onFrontmostProvider?(.workbuddy)
         }
     }
 
@@ -73,9 +77,11 @@ final class AppMonitor {
         let runningIDs = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
         let claude = runningIDs.contains(where: claudeBundleIDs.contains)
         let codex = runningIDs.contains(where: codexBundleIDs.contains)
-        if claude != claudeRunning || codex != codexRunning {
+        let workBuddy = runningIDs.contains(where: workBuddyBundleIDs.contains)
+        if claude != claudeRunning || codex != codexRunning || workBuddy != workBuddyRunning {
             claudeRunning = claude
             codexRunning = codex
+            workBuddyRunning = workBuddy
             onChange?()
         }
     }

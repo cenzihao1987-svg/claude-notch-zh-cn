@@ -162,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func sync() {
         model.claudeRunning = monitor.claudeRunning
         model.codexRunning = monitor.codexRunning
+        model.workBuddyRunning = monitor.workBuddyRunning
         let screens = Dictionary(uniqueKeysWithValues: NSScreen.screens.compactMap { screen in
             screen.displayID.map { ($0, screen) }
         })

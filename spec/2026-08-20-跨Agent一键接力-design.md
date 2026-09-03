@@ -5,8 +5,9 @@
 ## 目标
 
 在展开态的近期任务中，由用户手动把一个已经停止的 Codex 任务交给 Claude 桌面端中的 Code 会话或
-WorkBuddy，或把一个已经停止的 Claude Code 会话交给 Codex 或 WorkBuddy。WorkBuddy 第一版只作为
-目标 Agent，不读取它的任务列表，不增加额度卡片，不实现 WorkBuddy 向其他 Agent 的反向接力。接力
+WorkBuddy，或把一个已经停止的 Claude Code 会话交给 Codex 或 WorkBuddy。WorkBuddy 仍只作为
+交接目标，不实现 WorkBuddy 向其他 Agent 的反向接力；其独立的用量与近期任务只读展示见
+`2026-08-30-WorkBuddy用量-design.md`。接力
 恢复的是可验证的任务现场，不复制模型
 未公开的内部思考，也不把刘海工具改造成自动编排多个 Agent 的中枢。
 
@@ -90,7 +91,7 @@ Claude 桌面端；不能静默显示成功。
 
 ## 内部接口
 
-- `AgentTaskReference`：来源、会话 ID、标题、目录和记录位置。来源仍只有 Claude/Codex。
+- `AgentTaskReference`：来源、会话 ID、标题、目录和记录位置。接力来源仍只有 Claude/Codex。
 - `HandoffDestination`：Claude Desktop、Codex 和 WorkBuddy 三种内部交接目标。
 - `TaskHandoffPacketV1`：统一、可版本化的交接包。
 - `HandoffResult`：目标已打开、只生成并复制交接指令、失败。

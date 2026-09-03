@@ -29,20 +29,26 @@ Claude Notch does more than track quotas. Hover over a recent task in the expand
 
 ## Latest UI
 
-![Claude Notch: Codex single-page quota view, 7-day chart, and recent tasks](docs/media/claude-notch-v0.4.0.png)
+![Claude Notch: seven-day Codex plan usage stacked by Sol / Terra / Luna](docs/media/claude-notch-v0.6.0-codex.png)
+
+![Claude Notch: handing a recent task to Codex or WorkBuddy](docs/media/claude-notch-v0.6.0-handoff.png)
+
+![Claude Notch: the standalone settings window](docs/media/claude-notch-v0.6.0-settings.png)
 
 ![Claude Notch: 18-second interaction demo](docs/media/claude-notch-v0.4.0-demo.gif)
 
 ## Highlights
 
-- Two-way visible-context handoff between Claude and Codex, so work can continue across agents.
+- Two-way visible-context handoff between Claude and Codex, so work can continue across agents; tasks can also go to WorkBuddy.
 - Chinese / English UI switching with a one-page expanded layout for both Claude and Codex.
-- Hover to expand, smooth expand/collapse movement, and a settings gear at the right edge.
+- Hover to expand, smooth expand/collapse movement, and a settings gear at the right edge that opens a standalone settings window.
 - Independent notch windows on every display, with compact activity indicators while collapsed.
 - Claude reads the official Claude Desktop usage cache by default and does not automatically access Keychain data, reducing repeated password prompts.
 - Claude Pro hides inapplicable Fable and credit information; Max keeps the applicable capabilities.
 - Codex numbers and ring both represent **remaining quota**, with 7-day quota, reset time, recent tasks, and a desktop widget.
+- Seven-day Codex plan usage is stacked by Sol / Terra / Luna, sourced from the same endpoint as the official Analysis page.
 - The Codex reset tile combines local reset timing with third-party parsed Tibo announcement signals; it does not read X directly.
+- WorkBuddy gets its own tab showing remaining quota, plan, and refresh time.
 
 ## Install
 
@@ -54,7 +60,10 @@ open “System Settings → Privacy & Security” and choose “Open Anyway”.
 ## Data and Privacy
 
 - Claude reads only the local Claude Desktop cache by default. It does not read browser or Claude Code credentials. Claude Desktop credential fallback is available only when the user enables it in Settings.
+- With credential fallback enabled, the first read raises one system Keychain prompt. The resulting 16-byte decryption key is then cached at `~/Library/Application Support/ClaudeNotch/Keys/` with `0600` permissions, and the Keychain is never touched again. This is needed because a build signed without an Apple certificate looks like a different program to macOS after every update, which voids the "Always Allow" grant and would otherwise cost a password on every install. Delete that directory to go back to being asked every time.
 - Codex uses the official local `codex app-server`; prompts, account emails, and login tokens are neither read nor uploaded.
+- Seven-day Codex plan usage comes from a read-only `chatgpt.com` endpoint, the same one behind the Analysis page in Codex settings; credentials and responses stay in memory, and are never persisted or logged.
+- WorkBuddy reads the local CodeBuddy login information and queries `copilot.tencent.com` for quota.
 - Reset reminders request only anonymous public JSON from `codex-reset.com`; that service parses Tibo’s X announcements.
 
 ## License and Credits

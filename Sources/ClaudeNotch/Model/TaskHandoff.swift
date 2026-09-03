@@ -47,6 +47,7 @@ struct AgentTaskReference: Equatable, Sendable, Identifiable {
         switch provider {
         case .claude: [.codex, .workBuddy]
         case .codex: [.claudeDesktop, .workBuddy]
+        case .workbuddy: [.claudeDesktop, .codex]
         case .deepseek: []
         }
     }

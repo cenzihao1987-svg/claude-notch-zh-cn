@@ -2,6 +2,7 @@ import Foundation
 import Security
 import LocalAuthentication
 import CommonCrypto
+import OSLog
 import SQLite3
 
 /// Live account limits fetched from claude.ai (same source Claude Desktop uses).
@@ -26,6 +27,8 @@ struct ClaudeLimits: Sendable {
 /// queries claude.ai for the real usage. An actor so the blocking Keychain / SQLite / crypto
 /// work stays off the main thread.
 actor ClaudeAPIService {
+
+    private static let log = Logger(subsystem: "com.claudenotch.app", category: "keychain")
 
     static func isAllowedFallbackSource(_ source: String) -> Bool {
         source == "Claude Desktop"
@@ -82,8 +85,7 @@ actor ClaudeAPIService {
         //    touches a single Keychain item.
         for source in orderedSources() where Self.isAllowedFallbackSource(source.name) {
             if let until = backoffUntil[source.name], until > Date() { continue }
-            let context = await touchIDContextIfAvailable(for: source.keychainService)
-            guard let cookies = readCookies(from: source, authenticationContext: context),
+            guard let cookies = readCookies(from: source),
                   let org = cookies["lastActiveOrg"], cookies["sessionKey"] != nil
             else {
                 backoffUntil[source.name] = Date().addingTimeInterval(backoff)
@@ -104,8 +106,7 @@ actor ClaudeAPIService {
         // Claude Desktop's own OAuth token, cached in its config.json. This hits
         // api.anthropic.com, which serves no Cloudflare challenge — so it still works when the
         // claude.ai calls above are answered with one, which is what happens on many networks.
-        let context = await touchIDContextIfAvailable(for: "Claude Safe Storage")
-        if let limits = await fetchFromDesktopOAuth(authenticationContext: context) { return limits }
+        if let limits = await fetchFromDesktopOAuth() { return limits }
 
         // Never turn a failed Desktop read into another prompt for Chrome, Edge, or Claude Code.
         return nil
@@ -432,13 +433,17 @@ actor ClaudeAPIService {
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
         var out: [String: String] = [:]
+        var rows = 0
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let cName = sqlite3_column_text(stmt, 0), let blob = sqlite3_column_blob(stmt, 1)
             else { continue }
             let name = String(cString: cName)
             let enc = Data(bytes: blob, count: Int(sqlite3_column_bytes(stmt, 1)))
+            rows += 1
             if let val = decrypt(enc, key: key) { out[name] = val }
         }
+        // Cookies are there but not one of them decrypts: the key is stale, not the login.
+        if out.isEmpty, rows > 0 { discardCachedKey(service: service) }
         return out.isEmpty ? nil : out
     }
 
@@ -463,46 +468,15 @@ actor ClaudeAPIService {
     /// "wants to use your confidential information stored in …" prompt, so it must not run on
     /// every refresh. A denial is also remembered (as a backoff on the owning source) so the
     /// user isn't asked again a minute later.
-    private func touchIDContextIfAvailable(for service: String?) async -> LAContext? {
-        guard let service,
-              keyCache[service] == nil,
-              requiresInteractiveKeychainAccess(service: service)
-        else { return nil }
-        let context = LAContext()
-        var error: NSError?
-        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
-        else { return nil }
-        context.localizedFallbackTitle = "使用密码"
-        do {
-            let authenticated = try await context.evaluatePolicy(
-                .deviceOwnerAuthentication,
-                localizedReason: "使用 Touch ID 读取 Claude 凭据并更新用量"
-            )
-            return authenticated ? context : nil
-        } catch {
-            return nil
-        }
-    }
-
-    private func requiresInteractiveKeychainAccess(service: String) -> Bool {
-        let context = LAContext()
-        context.interactionNotAllowed = true
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationContext as String: context,
-        ]
-        var item: CFTypeRef?
-        return SecItemCopyMatching(query as CFDictionary, &item) == errSecInteractionNotAllowed
-    }
-
     private func safeStorageKey(
         service: String,
         authenticationContext: LAContext? = nil
     ) -> Data? {
         if let cached = keyCache[service] { return cached }   // includes a cached denial (nil)
+        if let onDisk = diskCachedKey(service: service) {
+            keyCache[service] = onDisk
+            return onDisk
+        }
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -513,8 +487,10 @@ actor ClaudeAPIService {
             query[kSecUseAuthenticationContext as String] = authenticationContext
         }
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let pw = item as? Data else {
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let pw = item as? Data else {
+            // Failing silently here is what makes "Refresh now does nothing" impossible to explain.
+            Self.log.notice("\(service, privacy: .public): OSStatus \(status, privacy: .public)")
             keyCache[service] = Data?.none   // denied or missing: don't ask again this launch
             return nil
         }
@@ -531,7 +507,46 @@ actor ClaudeAPIService {
         }
         guard ok == kCCSuccess else { keyCache[service] = Data?.none; return nil }
         keyCache[service] = key
+        cacheKeyOnDisk(key, service: service)
         return key
+    }
+
+    /// Where the derived key is parked between launches. Reading it out of the Keychain is what
+    /// raises the password prompt, and an app signed without an Apple-issued certificate has no
+    /// team identifier — so macOS falls back to identifying it by the hash of its binary, and every
+    /// rebuild looks like a different program whose "Always Allow" grant no longer applies. Caching
+    /// the key here means the Keychain is touched exactly once, ever. The trade-off is that the key
+    /// lives in a file (0600, inside the user-private Application Support tree) rather than in the
+    /// Keychain.
+    private static let keyCacheDirectory = FileManager.default
+        .homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/ClaudeNotch/Keys", isDirectory: true)
+
+    private func diskCachedKeyURL(service: String) -> URL {
+        Self.keyCacheDirectory
+            .appendingPathComponent(service.replacingOccurrences(of: "/", with: "_") + ".key")
+    }
+
+    private func diskCachedKey(service: String) -> Data? {
+        guard let key = try? Data(contentsOf: diskCachedKeyURL(service: service)),
+              key.count == 16 else { return nil }
+        return key
+    }
+
+    private func cacheKeyOnDisk(_ key: Data, service: String) {
+        let fm = FileManager.default
+        let url = diskCachedKeyURL(service: service)
+        try? fm.createDirectory(at: Self.keyCacheDirectory, withIntermediateDirectories: true,
+                                attributes: [.posixPermissions: 0o700])
+        try? key.write(to: url, options: .atomic)
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    /// Reinstalling Claude Desktop generates a fresh Safe Storage password, which leaves the cached
+    /// key decrypting to garbage. Drop it so the next read goes back to the Keychain.
+    private func discardCachedKey(service: String) {
+        keyCache.removeValue(forKey: service)
+        try? FileManager.default.removeItem(at: diskCachedKeyURL(service: service))
     }
 
     /// Chromium "v10" AES-128-CBC (IV = 16 × 0x20). Newer builds prepend a 32-byte

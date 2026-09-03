@@ -15,6 +15,7 @@ final class AppModel {
 
     private(set) var snapshot: UsageSnapshot = .empty
     private(set) var codexSnapshot: ProviderUsageSnapshot = .unavailable(.codex)
+    private(set) var workBuddySnapshot: ProviderUsageSnapshot = .unavailable(.workbuddy)
     private(set) var deepSeekSnapshot: ProviderUsageSnapshot = .unavailable(.deepseek)
     private(set) var codexWidgetSnapshot = CodexWidgetSnapshotStore.load()
     private(set) var selectedProvider = UsageProviderID(
@@ -33,6 +34,7 @@ final class AppModel {
     var isPaused = false
     var claudeRunning = false
     var codexRunning = false
+    var workBuddyRunning = false
     private(set) var activityStates: [UsageProviderID: AgentActivityState] = [:]
     var avatarStyle: AvatarStyle = AvatarStyle.selected
     /// Whether the icon (Clawd / Spark) animates. Persisted; default on.
@@ -74,6 +76,7 @@ final class AppModel {
     private let claudeAPI = ClaudeAPIService()
     private let desktopUsageCache = ClaudeDesktopUsageCache()
     private let codexProvider = CodexUsageProvider()
+    private let workBuddyProvider = WorkBuddyUsageProvider()
     private let deepSeekProvider = DeepSeekUsageProvider()
     private let deepSeekSpendHistoryStore = DeepSeekSpendHistoryStore()
     private let resetForecastService = CodexResetForecastService()
@@ -84,6 +87,7 @@ final class AppModel {
     private var ticker: Timer?
     private var limitsTimer: Timer?
     private var codexTimer: Timer?
+    private var workBuddyTimer: Timer?
     private var deepSeekTimer: Timer?
     private var codexWidgetTimer: Timer?
     private var lifetimeTimer: Timer?
@@ -111,6 +115,10 @@ final class AppModel {
     private var deepSeekPassiveSlots = Set(
         UserDefaults.standard.stringArray(forKey: "deepSeekAutomaticScanSlotsV2") ?? []
     )
+    private var workBuddyAttemptedAt: Date?
+    private var workBuddyFailures = 0
+    private var workBuddyInFlight = false
+    private var workBuddyIsStale = false
 
     // MARK: display values (official account sources only)
 
@@ -133,6 +141,8 @@ final class AppModel {
     /// dims the numbers so a frozen value is never shown as if it were current.
     var isStale: Bool {
         switch selectedProvider {
+        case .workbuddy:
+            workBuddyIsStale || workBuddySnapshot.isStale(after: Self.workBuddyCollapsedInterval)
         case .deepseek:
             deepSeekIsStale || deepSeekSnapshot.isStale(after: Self.deepSeekCollapsedInterval)
         case .claude, .codex:
@@ -181,6 +191,7 @@ final class AppModel {
         switch selectedProvider {
         case .claude: max(claudeSessionUsage ?? 0, weeklyUsage ?? 0)
         case .codex: codexSnapshot.maximumUsage
+        case .workbuddy: workBuddySnapshot.maximumUsage
         case .deepseek: 0
         }
     }
@@ -225,6 +236,7 @@ final class AppModel {
         switch selectedProvider {
         case .claude: return claudeProviderSnapshot
         case .codex: return codexSnapshot
+        case .workbuddy: return workBuddySnapshot
         case .deepseek:
             var snapshot = deepSeekSnapshot
             if let history = deepSeekSpendHistory {
@@ -327,6 +339,9 @@ final class AppModel {
         codexTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTick, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tickCodexUsage() }
         }
+        workBuddyTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTick, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tickWorkBuddyUsage() }
+        }
         deepSeekTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTick, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tickDeepSeekUsage() }
         }
@@ -359,6 +374,7 @@ final class AppModel {
         switch provider {
         case .claude: running = claudeRunning
         case .codex: running = codexRunning
+        case .workbuddy: running = workBuddyRunning
         case .deepseek: running = false
         }
         return running ? (activityStates[provider] ?? .idle) : .idle
@@ -473,6 +489,7 @@ final class AppModel {
         switch selectedProvider {
         case .claude: fetchLimits(force: true)   // fresh Desktop cache first; network if unavailable/stale
         case .codex: fetchCodexUsage()
+        case .workbuddy: fetchWorkBuddyUsage(force: true, forceLocalUsage: true)
         case .deepseek:
             refreshDeepSeekSpendHistory()
             fetchDeepSeekUsage(force: true)
@@ -485,6 +502,7 @@ final class AppModel {
             refresh()
             fetchLimits()
             fetchCodexUsage()
+            fetchWorkBuddyUsage(force: true)
             refreshDeepSeekPassiveDataIfNeeded()
         }
     }
@@ -493,6 +511,7 @@ final class AppModel {
         switch selectedProvider {
         case .claude: fetchLimits()
         case .codex: fetchCodexUsage()
+        case .workbuddy: fetchWorkBuddyUsage(force: true)
         case .deepseek: break  // DeepSeek reads automatically only at 09:00/21:00.
         }
     }
@@ -549,6 +568,8 @@ final class AppModel {
     /// 2026-08-17 先用过 15/45，把账号打到了 api.anthropic.com 的 429，回退到这一档。
     private static let refreshTick: TimeInterval = 30
     private static let collapsedInterval: TimeInterval = 90
+    private static let workBuddyExpandedInterval: TimeInterval = 60
+    private static let workBuddyCollapsedInterval: TimeInterval = 5 * 60
     private static let deepSeekCollapsedInterval: TimeInterval = 12 * 60 * 60
     /// 连续失败后的退避上限，与 ClaudeAPIService 里的 900 秒 backoff 同量级。
     private static let maxBackoff: TimeInterval = 900
@@ -593,6 +614,17 @@ final class AppModel {
         guard shouldRefreshCodex(since: last) else { return }
         Self.log.notice("codex, \(last.map { Date().timeIntervalSince($0) } ?? -1, privacy: .public)s since last")
         fetchCodexUsage()
+    }
+
+    private var workBuddyMinGap: TimeInterval {
+        let normal = isExpanded ? Self.workBuddyExpandedInterval : Self.workBuddyCollapsedInterval
+        guard workBuddyFailures > 0 else { return normal }
+        return min(normal * pow(2, Double(workBuddyFailures)), Self.maxBackoff)
+    }
+
+    private func tickWorkBuddyUsage() {
+        guard !isPaused, selectedProvider == .workbuddy else { return }
+        fetchWorkBuddyUsage()
     }
 
     private func tickDeepSeekUsage() {
@@ -756,6 +788,7 @@ final class AppModel {
 
     func fetchCodexUsage(includeWhenInactive: Bool = false) {
         guard !isPaused, includeWhenInactive || selectedProvider == .codex else { return }
+        let includeModelBreakdown = selectedProvider == .codex
 
         // 只在真正在看 Codex 卡片时才碰外部站点。桌面小组件那条每 15 分钟的后台刷新
         // （includeWhenInactive: true）只需要 7 天额度，不该为它发第三方请求。
@@ -770,9 +803,34 @@ final class AppModel {
 
         Task { [codexProvider, resetForecastService] in
             let forecast = await resetForecastService.current()
-            let snapshot = await codexProvider.fetch(forecast: forecast)
+            let snapshot = await codexProvider.fetch(
+                forecast: forecast,
+                includeModelBreakdown: includeModelBreakdown
+            )
             self.codexSnapshot = snapshot
             self.updateCodexWidget(from: snapshot)
+        }
+    }
+
+    func fetchWorkBuddyUsage(force: Bool = false, forceLocalUsage: Bool = false) {
+        guard !isPaused, selectedProvider == .workbuddy, !workBuddyInFlight else { return }
+        let gap = workBuddyAttemptedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        guard force || gap >= workBuddyMinGap else { return }
+        workBuddyInFlight = true
+        workBuddyAttemptedAt = Date()
+        Task { [workBuddyProvider] in
+            let snapshot = await workBuddyProvider.fetch(forceLocalUsage: forceLocalUsage)
+            self.workBuddyInFlight = false
+            self.workBuddySnapshot = snapshot
+            if snapshot.statusMessage == nil {
+                self.workBuddyFailures = 0
+                self.workBuddyIsStale = false
+            } else {
+                self.workBuddyFailures += 1
+                self.workBuddyIsStale = snapshot.fetchedAt.map {
+                    Date().timeIntervalSince($0) > 2
+                } ?? false
+            }
         }
     }
 
@@ -886,9 +944,27 @@ final class AppModel {
         }
     }
 
+    /// All providers show at most three recent tasks. When fewer tasks exist, the list stays
+    /// truthful instead of filling the dashboard with stale history or blank rows.
+    static let expandedTaskLimit = 3
+
     /// Expanded geometry is shared by the SwiftUI shape and its AppKit interaction zone.
+    /// Three task rows need more room than the former two-row layout; status text gets one
+    /// additional line below the list.
+    static func expandedDropHeight(sessionCount: Int, hasStatus: Bool) -> CGFloat {
+        let rows = min(expandedTaskLimit, max(1, sessionCount))
+        return 204 + CGFloat(rows) * 30 + (hasStatus ? 20 : 0)
+    }
+
     /// Read by both the view and the window's click-zone.
-    var expandedDropHeight: CGFloat { 260 }
+    var expandedDropHeight: CGFloat {
+        guard selectedProvider != .deepseek else { return 260 }
+        let snapshot = activeProviderSnapshot
+        return Self.expandedDropHeight(
+            sessionCount: snapshot.sessions.count,
+            hasStatus: snapshot.statusMessage != nil || isStale
+        )
+    }
     var expandedIslandWidth: CGFloat { 720 }
 
     /// Terminal statusline feed. Claude Code 2.1.80+ officially exposes account rate limits in

@@ -28,20 +28,26 @@ Claude Notch 不只展示额度。把鼠标移到展开后的“近期任务”�
 
 ## 最新效果
 
-![Claude Notch：展开后的 Codex 单页额度、近 7 天图表与近期任务](docs/media/claude-notch-v0.4.0.png)
+![Claude Notch：Codex 展开后按 Sol / Terra / Luna 堆叠显示近 7 天套餐用量](docs/media/claude-notch-v0.6.0-codex.png)
+
+![Claude Notch：把近期任务交给 Codex 或 WorkBuddy](docs/media/claude-notch-v0.6.0-handoff.png)
+
+![Claude Notch：独立设置窗口](docs/media/claude-notch-v0.6.0-settings.png)
 
 ![Claude Notch：18 秒操作演示](docs/media/claude-notch-v0.4.0-demo.gif)
 
 ## 主要功能
 
-- Claude 与 Codex 双向可见上下文接力，让任务在两个 Agent 之间继续完成。
+- Claude 与 Codex 双向可见上下文接力，让任务在两个 Agent 之间继续完成；任务也可以交给 WorkBuddy。
 - 中文 / English 界面切换；Claude 和 Codex 展开后均为单页信息布局。
-- 鼠标悬停展开，展开与收起使用平滑位移动画；设置入口为右侧齿轮图标。
+- 鼠标悬停展开，展开与收起使用平滑位移动画；点右侧齿轮打开独立设置窗口。
 - 多显示器独立显示、独立展开；收起时以小圆点提示工作中、思考中或待确认状态。
 - Claude 默认只读取 Claude Desktop 缓存的官方额度数据，不自动访问钥匙串，避免重复密码弹窗。
 - Claude Pro 会隐藏不适用的 Fable 和可用额度；Max 保留相应能力。
 - Codex 数字和圆环都表示**剩余额度**；支持 7 天额度、重置时间、近期任务与桌面组件。
-- Codex 的“重置”格子结合本地倒计时与第三方已解析的 Tibo 公告信号；它不直接读取 X。
+- Codex 近 7 天套餐用量按 Sol / Terra / Luna 分色堆叠，数据取自官方 Analysis 页同款接口。
+- Codex 的”重置”格子结合本地倒计时与第三方已解析的 Tibo 公告信号；它不直接读取 X。
+- WorkBuddy 额度独立成 Tab，显示剩余额度、套餐与刷新时间。
 
 ## 安装
 
@@ -53,7 +59,10 @@ Claude Notch 不只展示额度。把鼠标移到展开后的“近期任务”�
 ## 数据与隐私
 
 - Claude 默认只读 Claude Desktop 的本地缓存；不读取浏览器或 Claude Code 凭证。只有用户在设置中手动开启“Claude 备用获取”后，才会读取 Claude Desktop 自身的授权信息。
+- 开启“Claude 备用获取”后，第一次读取会弹一次系统钥匙串授权；取得的 16 字节解密密钥随后以 `0600` 权限缓存在 `~/Library/Application Support/ClaudeNotch/Keys/`，此后不再访问钥匙串。这么做是因为没有 Apple 证书签名的构建每次更新都会被 macOS 当成另一个程序，“始终允许”随之失效，不缓存就会每装一次新版重输一次密码。不想要这份缓存，删掉该目录即可恢复每次询问。
 - Codex 使用官方本地 `codex app-server`；不读取或上传提示词、账号邮箱和登录 token。
+- Codex 近 7 天套餐用量取自官方 `chatgpt.com` 的只读接口，与 Codex 设置里的 Analysis 页同源；凭据与返回内容只在内存中使用，不落盘、不记日志。
+- WorkBuddy 读取本机 CodeBuddy 的登录信息，向 `copilot.tencent.com` 查询额度。
 - 重置提醒只请求不带鉴权、不携带用户信息的 `codex-reset.com` 公开 JSON；该网站负责解析 Tibo 的 X 公告。
 
 ## 开源许可证与致谢

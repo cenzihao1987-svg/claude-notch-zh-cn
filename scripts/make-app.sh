@@ -30,16 +30,34 @@ DIST="$ROOT/dist"
 APPDIR="$DIST/$APP_NAME.app"
 
 # Pick a signing identity.
+# LOCAL_SIGN=1 marks an identity Apple never issued (self-signed or ad-hoc): no hardened runtime,
+# no timestamp, no WidgetKit — see the signing step below.
+LOCAL_SIGN=0
+LOCAL_CERT_NAME="${LOCAL_CERT_NAME:-Claude Notch Local}"
 if [ -z "${SIGN_ID:-}" ]; then
   SIGN_ID="$(security find-identity -v -p codesigning \
     | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+  if [ -z "$SIGN_ID" ]; then
+    # A self-signed code-signing certificate is enough to make the designated requirement stable
+    # across rebuilds ("certificate leaf = H…" instead of a cdhash), which is what keeps the
+    # Keychain "Always Allow" grants alive. Free, and good enough for a local build.
+    SIGN_ID="$(security find-identity -v -p codesigning \
+      | awk -F'"' -v n="$LOCAL_CERT_NAME" '$2 == n {print $2; exit}')"
+    if [ -n "$SIGN_ID" ]; then
+      LOCAL_SIGN=1
+      echo "▸ No Developer ID — using self-signed '$SIGN_ID' (LOCAL BUILD ONLY, do not distribute)"
+    fi
+  fi
   if [ -z "$SIGN_ID" ]; then
     # Ad-hoc signing gives the app a cdhash-based designated requirement, so every rebuild is a
     # DIFFERENT identity to macOS: users' "Always Allow" Keychain grants stop applying and the
     # authorization prompt returns after each update (issue #6). Never ship that by accident.
     if [ -n "${ALLOW_ADHOC:-}" ]; then
       echo "⚠︎ No Developer ID identity — ad-hoc signing (LOCAL BUILD ONLY, do not distribute)"
+      echo "  Every rebuild re-prompts for the Keychain password. Create a self-signed"
+      echo "  '$LOCAL_CERT_NAME' code-signing certificate to stop that."
       SIGN_ID="-"
+      LOCAL_SIGN=1
     else
       echo "✗ No 'Developer ID Application' identity found in the keychain."
       echo "  Releases must be signed with a stable identity, or users get repeated Keychain"
@@ -51,8 +69,8 @@ if [ -z "${SIGN_ID:-}" ]; then
 fi
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 EMBED_WIDGETKIT="${EMBED_WIDGETKIT:-0}"
-if [ "$EMBED_WIDGETKIT" = "1" ] && [ "$SIGN_ID" = "-" ]; then
-  echo "✗ WidgetKit extensions require an Apple signing identity; use the built-in desktop widget for ad-hoc builds."
+if [ "$EMBED_WIDGETKIT" = "1" ] && [ "$LOCAL_SIGN" = "1" ]; then
+  echo "✗ WidgetKit extensions require an Apple signing identity; use the built-in desktop widget for local builds."
   exit 1
 fi
 
@@ -98,9 +116,13 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$APPDIR/Contents/
 
 echo "▸ Signing as: $SIGN_ID"
 FW="$APPDIR/Contents/Frameworks/Sparkle.framework"
-if [ "$SIGN_ID" = "-" ]; then
-  codesign --force --sign - "$FW"
-  codesign --force --sign - "$APPDIR"
+if [ "$LOCAL_SIGN" = "1" ]; then
+  # Plain signing, deliberately without --options runtime: the hardened runtime turns on library
+  # validation, which matches loadable frameworks by team identifier — and an identity Apple
+  # didn't issue has none, so the embedded Sparkle.framework would fail to load. --timestamp is
+  # skipped too; it calls out to Apple's timestamp server and buys nothing for a local build.
+  codesign --force --sign "$SIGN_ID" "$FW"
+  codesign --force --sign "$SIGN_ID" "$APPDIR"
 else
   # Sign Sparkle inside-out (no --deep), then the app last.
   codesign -f -o runtime --timestamp -s "$SIGN_ID" "$FW/Versions/B/XPCServices/Installer.xpc"
@@ -119,7 +141,7 @@ else
   codesign --verify --strict --verbose=2 "$APPDIR"
 fi
 
-if [ -n "$NOTARY_PROFILE" ] && [ "$SIGN_ID" != "-" ]; then
+if [ -n "$NOTARY_PROFILE" ] && [ "$LOCAL_SIGN" != "1" ]; then
   echo "▸ Notarizing (this uploads to Apple and waits)…"
   ditto -c -k --sequesterRsrc --keepParent "$APPDIR" "$DIST/notary.zip"
   xcrun notarytool submit "$DIST/notary.zip" --keychain-profile "$NOTARY_PROFILE" --wait
