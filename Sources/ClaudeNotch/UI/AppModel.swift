@@ -1,9 +1,7 @@
-import CodexWidgetShared
 import AppKit
 import Foundation
 import OSLog
 import SwiftUI
-import WidgetKit
 
 @MainActor @Observable
 final class AppModel {
@@ -17,7 +15,6 @@ final class AppModel {
     private(set) var codexSnapshot: ProviderUsageSnapshot = .unavailable(.codex)
     private(set) var workBuddySnapshot: ProviderUsageSnapshot = .unavailable(.workbuddy)
     private(set) var deepSeekSnapshot: ProviderUsageSnapshot = .unavailable(.deepseek)
-    private(set) var codexWidgetSnapshot = CodexWidgetSnapshotStore.load()
     private(set) var selectedProvider = UsageProviderID(
         rawValue: UserDefaults.standard.string(forKey: "selectedProvider") ?? ""
     ) ?? .claude
@@ -41,9 +38,6 @@ final class AppModel {
     var animateIcon: Bool = (UserDefaults.standard.object(forKey: "animateIcon") as? Bool) ?? true
     /// Hide the island while a fullscreen app is frontmost (menu bar hidden). Persisted; default off.
     var hideInFullscreen: Bool = UserDefaults.standard.bool(forKey: "hideInFullscreen")
-    /// Keep the Codex quota card on the desktop. Persisted; default on.
-    var showDesktopWidget: Bool =
-        (UserDefaults.standard.object(forKey: "showDesktopWidget") as? Bool) ?? true
     /// Credential-free by default. The user must explicitly opt in before any Keychain read.
     private(set) var claudeCredentialFallbackEnabled =
         UserDefaults.standard.bool(forKey: "claudeCredentialFallbackEnabled")
@@ -87,9 +81,10 @@ final class AppModel {
     private var ticker: Timer?
     private var limitsTimer: Timer?
     private var codexTimer: Timer?
+    private var codexInFlight = false
+    private var codexIsStale = false
     private var workBuddyTimer: Timer?
     private var deepSeekTimer: Timer?
-    private var codexWidgetTimer: Timer?
     private var lifetimeTimer: Timer?
     private var activityTimer: Timer?
     private var activityReadInFlight = false
@@ -145,7 +140,9 @@ final class AppModel {
             workBuddyIsStale || workBuddySnapshot.isStale(after: Self.workBuddyCollapsedInterval)
         case .deepseek:
             deepSeekIsStale || deepSeekSnapshot.isStale(after: Self.deepSeekCollapsedInterval)
-        case .claude, .codex:
+        case .codex:
+            codexIsStale || codexSnapshot.isStale(after: Self.claudeUsageFreshAfter)
+        case .claude:
             activeProviderSnapshot.isStale(after: Self.claudeUsageFreshAfter)
         }
     }
@@ -317,9 +314,6 @@ final class AppModel {
     private var configURL: URL { home.appendingPathComponent(".claude.json") }
 
     func start() {
-        CodexWidgetSnapshotStore.saveLanguage(
-            language == .english ? .english : .chinese
-        )
         readPlanLimits()
         watcher = LogWatcher { [weak self] urls in
             guard let self, !self.isPaused else { return }
@@ -345,13 +339,6 @@ final class AppModel {
         deepSeekTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshTick, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tickDeepSeekUsage() }
         }
-        codexWidgetTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.selectedProvider != .codex else { return }
-                self.fetchCodexUsage(includeWhenInactive: true)
-            }
-        }
-        codexWidgetTimer?.tolerance = 60
         Task.detached(priority: .utility) { [weak self] in
             let files = ClaudePaths.recentLogFiles(within: 2)   // recursive walk stays off-main
             await self?.ingest(files)
@@ -536,10 +523,6 @@ final class AppModel {
         guard newLanguage != language else { return }
         language = newLanguage
         newLanguage.save()
-        CodexWidgetSnapshotStore.saveLanguage(
-            newLanguage == .english ? .english : .chinese
-        )
-        WidgetCenter.shared.reloadAllTimelines()
     }
     func toggleAnimateIcon() {
         animateIcon.toggle()
@@ -548,10 +531,6 @@ final class AppModel {
     func toggleHideInFullscreen() {
         hideInFullscreen.toggle()
         UserDefaults.standard.set(hideInFullscreen, forKey: "hideInFullscreen")
-    }
-    func toggleDesktopWidget() {
-        showDesktopWidget.toggle()
-        UserDefaults.standard.set(showDesktopWidget, forKey: "showDesktopWidget")
     }
     func toggleClaudeCredentialFallback() {
         claudeCredentialFallbackEnabled.toggle()
@@ -787,11 +766,11 @@ final class AppModel {
     }
 
     func fetchCodexUsage(includeWhenInactive: Bool = false) {
-        guard !isPaused, includeWhenInactive || selectedProvider == .codex else { return }
+        guard !isPaused, includeWhenInactive || selectedProvider == .codex,
+              !codexInFlight else { return }
+        codexInFlight = true
         let includeModelBreakdown = selectedProvider == .codex
 
-        // 只在真正在看 Codex 卡片时才碰外部站点。桌面小组件那条每 15 分钟的后台刷新
-        // （includeWhenInactive: true）只需要 7 天额度，不该为它发第三方请求。
         if selectedProvider == .codex {
             // 发出去就不管：codex-resets.com 慢 15 秒，也不该让刘海的数字晚 15 秒。
             // 拉到的值落进 actor 缓存，下面这次刷新用的是上一份。真拿到新值时
@@ -807,8 +786,17 @@ final class AppModel {
                 forecast: forecast,
                 includeModelBreakdown: includeModelBreakdown
             )
-            self.codexSnapshot = snapshot
-            self.updateCodexWidget(from: snapshot)
+            self.codexInFlight = false
+            self.applyCodexSnapshot(snapshot)
+        }
+    }
+
+    func applyCodexSnapshot(_ snapshot: ProviderUsageSnapshot) {
+        codexIsStale = snapshot.limits.isEmpty
+        if codexIsStale, !codexSnapshot.limits.isEmpty {
+            codexSnapshot.statusMessage = "Codex quota temporarily unavailable; showing last value"
+        } else {
+            codexSnapshot = snapshot
         }
     }
 
@@ -831,25 +819,6 @@ final class AppModel {
                     Date().timeIntervalSince($0) > 2
                 } ?? false
             }
-        }
-    }
-
-    private func updateCodexWidget(from snapshot: ProviderUsageSnapshot) {
-        guard let weekly = snapshot.limits.first(where: {
-            $0.label.split(separator: "·").last?
-                .trimmingCharacters(in: .whitespacesAndNewlines) == "7-Day"
-        }), let usedFraction = weekly.usedFraction else { return }
-        let widgetSnapshot = CodexWidgetSnapshot(
-            remainingFraction: 1 - usedFraction,
-            resetsAt: weekly.resetsAt,
-            fetchedAt: snapshot.fetchedAt ?? Date()
-        )
-        codexWidgetSnapshot = widgetSnapshot
-        CodexWidgetSnapshotStore.save(widgetSnapshot)
-        let systemWidget = Bundle.main.builtInPlugInsURL?
-            .appendingPathComponent("CodexQuotaWidget.appex")
-        if let systemWidget, FileManager.default.fileExists(atPath: systemWidget.path) {
-            WidgetCenter.shared.reloadTimelines(ofKind: "CodexQuotaWidget")
         }
     }
 

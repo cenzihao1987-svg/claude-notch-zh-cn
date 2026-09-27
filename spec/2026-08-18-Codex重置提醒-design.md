@@ -15,7 +15,7 @@ Tibo 信号改用 `https://codex-resets.com/`。网站明确称其为免费公�
   “Tibo 信号”和概率；不得写成“确定重置”。点击卡片到网站查看原文和完整上下文。
 - `active_watch.expires_at` 只用于判断观察信号是否仍有效，不得表达成“约 X 后重置”。
 - 数据每 15 分钟最多请求一次；失败后保留上一份好数据并继续退避。仅查看 Codex 卡片时
-  请求，桌面小组件后台刷新不触发第三方 API。
+  请求。
 - 整张 `reset` 卡片可点击，打开 `https://codex-resets.com/`；其他额度、Token 卡片不受影响。
 - 旧域名 `codex-reset.com` 的 `/api/forecast` 和 `/api/timeline` 不再调用。
 
@@ -143,7 +143,6 @@ OpenAI 会不定期给 Codex 用户额外重置额度，消息来源是 Codex �
 
 - 数据超过 **6 小时**未更新时，在下一次 Codex 刷新中顺带拉取
 - **仅当 `selectedProvider == .codex` 时才发请求**。看 Claude 时一个外部请求都不发
-- 桌面小组件那条每 15 分钟的后台 `fetchCodexUsage(includeWhenInactive: true)` **不触发** forecast 拉取 —— 小组件只显示 7 天额度剩余，不显示重置提醒
 
 选 6 小时而不是 24 小时：重置集中在北京时间早上 7–10 点，6 小时间隔保证起床时看到的数据不会是昨天下午的。按最坏情况每天 4 次 × 42KB ≈ 168KB/天。服务端自己声明 `max-age=300`，每天 4 次远在容忍度内。
 
@@ -176,8 +175,6 @@ OpenAI 会不定期给 Codex 用户额外重置额度，消息来源是 Codex �
 - `Sources/ClaudeNotch/UI/AppModel.swift` — 持有 service，在 `fetchCodexUsage` 中带上 forecast 数据
 
 复用现有 `tile()` 渲染，三行结构（label / 值 / 副行）与旁边格子完全一致。**不加特殊配色。**
-
-> 行号基于 2026-08-18 的工作区状态。该工作区有 13 个已修改、7 个未跟踪文件（桌面小组件功能）尚未提交，实施前需确认行号仍然准确。
 
 ## 验证方式
 

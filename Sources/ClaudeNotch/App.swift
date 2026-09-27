@@ -17,15 +17,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     let monitor = AppMonitor()
     private var windows: [CGDirectDisplayID: IslandWindow] = [:]
-    private var desktopWidget: DesktopWidgetWindow?
     private var clickMonitor: Any?
     private var fullscreenTimer: Timer?
     private var hoverTimer: Timer?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         model.start()
-        desktopWidget = DesktopWidgetWindow(model: model)
-        observeDesktopWidget()
         Updater.shared.start()                          // Sparkle auto-updates
         monitor.start(onChange: { [weak self] in self?.sync() },   // display / Claude changes
                       onFrontmostProvider: { [weak self] provider in
@@ -150,13 +147,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func observeDesktopWidget() {
-        desktopWidget?.setShown(model.showDesktopWidget)
-        withObservationTracking { _ = model.showDesktopWidget } onChange: { [weak self] in
-            Task { @MainActor in self?.observeDesktopWidget() }
-        }
-    }
-
     /// Push current notch geometry into the model and reposition the island to the notched
     /// screen. Runs on launch and on every display-configuration change.
     private func sync() {
@@ -181,7 +171,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 window.relayout(on: screen)
             }
         }
-        desktopWidget?.ensureVisible()
         updateVisibility()
     }
 

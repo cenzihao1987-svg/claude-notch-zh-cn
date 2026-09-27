@@ -33,8 +33,6 @@ Claude Notch does more than track quotas. Hover over a recent task in the expand
 
 ![Claude Notch: handing a recent task to Codex or WorkBuddy](docs/media/claude-notch-v0.6.0-handoff.png)
 
-![Claude Notch: the standalone settings window](docs/media/claude-notch-v0.6.0-settings.png)
-
 ![Claude Notch: 18-second interaction demo](docs/media/claude-notch-v0.4.0-demo.gif)
 
 ## Highlights
@@ -45,17 +43,15 @@ Claude Notch does more than track quotas. Hover over a recent task in the expand
 - Independent notch windows on every display, with compact activity indicators while collapsed.
 - Claude reads the official Claude Desktop usage cache by default and does not automatically access Keychain data, reducing repeated password prompts.
 - Claude Pro hides inapplicable Fable and credit information; Max keeps the applicable capabilities.
-- Codex numbers and ring both represent **remaining quota**, with 7-day quota, reset time, recent tasks, and a desktop widget.
+- Codex numbers and ring both represent **remaining quota**, with 7-day quota, reset time, and recent tasks.
+- Codex deduplicates recent tasks; if a quota read temporarily fails, it shows the last value with a clear warning until live data returns.
 - Seven-day Codex plan usage is stacked by Sol / Terra / Luna, sourced from the same endpoint as the official Analysis page.
 - The Codex reset tile combines local reset timing with third-party parsed Tibo announcement signals; it does not read X directly.
 - WorkBuddy gets its own tab showing remaining quota, plan, and refresh time.
 
-## Install
+## Get the source
 
-Download the DMG from [Releases](../../releases), open it, and drag `Claude Notch.app` to Applications.
-
-The current release is ad-hoc signed and not Apple-notarized. If macOS blocks the first launch,
-open “System Settings → Privacy & Security” and choose “Open Anyway”.
+[Releases](../../releases) provides the latest source archive. There is no DMG for other Macs yet: this machine has only a self-signed certificate, which cannot provide stable cross-device Keychain authorization.
 
 ## Data and Privacy
 

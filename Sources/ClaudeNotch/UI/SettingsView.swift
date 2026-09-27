@@ -68,12 +68,6 @@ struct SettingsView: View {
                    isOn: Binding(get: { model.hideInFullscreen },
                                  set: { _ in model.toggleHideInFullscreen() }))
 
-            Toggle(isOn: Binding(get: { model.showDesktopWidget },
-                                 set: { _ in model.toggleDesktopWidget() })) {
-                rowLabel(language.text("Codex 桌面小组件", "Codex desktop widget"),
-                         language.text("在桌面单独放一个 Codex 额度卡片，不用展开刘海",
-                                       "A standalone Codex quota card on the desktop, no need to expand the notch"))
-            }
         }
     }
 

@@ -32,8 +32,6 @@ Claude Notch 不只展示额度。把鼠标移到展开后的“近期任务”�
 
 ![Claude Notch：把近期任务交给 Codex 或 WorkBuddy](docs/media/claude-notch-v0.6.0-handoff.png)
 
-![Claude Notch：独立设置窗口](docs/media/claude-notch-v0.6.0-settings.png)
-
 ![Claude Notch：18 秒操作演示](docs/media/claude-notch-v0.4.0-demo.gif)
 
 ## 主要功能
@@ -44,17 +42,15 @@ Claude Notch 不只展示额度。把鼠标移到展开后的“近期任务”�
 - 多显示器独立显示、独立展开；收起时以小圆点提示工作中、思考中或待确认状态。
 - Claude 默认只读取 Claude Desktop 缓存的官方额度数据，不自动访问钥匙串，避免重复密码弹窗。
 - Claude Pro 会隐藏不适用的 Fable 和可用额度；Max 保留相应能力。
-- Codex 数字和圆环都表示**剩余额度**；支持 7 天额度、重置时间、近期任务与桌面组件。
+- Codex 数字和圆环都表示**剩余额度**；支持 7 天额度、重置时间与近期任务。
+- Codex 任务列表去重；读取暂时失败时保留上次额度并明确提示，成功后恢复实时数值。
 - Codex 近 7 天套餐用量按 Sol / Terra / Luna 分色堆叠，数据取自官方 Analysis 页同款接口。
 - Codex 的”重置”格子结合本地倒计时与第三方已解析的 Tibo 公告信号；它不直接读取 X。
 - WorkBuddy 额度独立成 Tab，显示剩余额度、套餐与刷新时间。
 
-## 安装
+## 获取
 
-从 [Releases](../../releases) 下载 DMG，打开后把 `Claude Notch.app` 拖入“应用程序”。
-
-当前发布包为本机 ad-hoc 签名，尚未经过 Apple 公证。首次打开如被系统拦截，到
-“系统设置 → 隐私与安全性”选择“仍要打开”。
+[Releases](../../releases) 提供最新源码归档。当前没有可供其他 Mac 安装的 DMG：本机只有自签名证书，无法提供稳定的跨设备钥匙串授权。
 
 ## 数据与隐私
 

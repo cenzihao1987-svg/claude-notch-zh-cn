@@ -63,7 +63,7 @@ actor CodexUsageProvider {
             let usage = exchange.decode(CodexAccountUsageResponse.self, id: 4)
             let threads = exchange.decode(CodexThreadListResponse.self, id: 5)
             let threadTokens = Dictionary(uniqueKeysWithValues:
-                (threads?.data.prefix(3).enumerated().compactMap { index, thread in
+                (threads?.recentThreads.enumerated().compactMap { index, thread in
                     let response = exchange.decode(
                         CodexThreadUsageResponse.self,
                         id: CodexRequestID.firstThreadUsage + index
@@ -81,8 +81,10 @@ actor CodexUsageProvider {
                 (2, account, "account"), (3, rateLimits, "rate limits"),
                 (4, usage, "usage"), (5, threads, "tasks"),
             ]
-            for (id, decoded, name) in decodes where exchange.hasResult(id) && decoded == nil {
-                errors[id] = "Codex \(name) response not recognized"
+            for (id, decoded, name) in decodes where decoded == nil && errors[id] == nil {
+                errors[id] = exchange.hasResult(id)
+                    ? "Codex \(name) response not recognized"
+                    : "Codex \(name) temporarily unavailable"
             }
             return CodexSnapshotMapper.make(
                 account: account,
@@ -165,6 +167,11 @@ struct CodexThreadListResponse: Decodable, Sendable {
     }
 
     let data: [Thread]
+
+    var recentThreads: [Thread] {
+        var seen = Set<String>()
+        return Array(data.filter { seen.insert($0.id).inserted }.prefix(3))
+    }
 }
 
 struct CodexThreadUsageResponse: Decodable, Sendable {
@@ -278,7 +285,7 @@ enum CodexSnapshotMapper {
                                value: turnLabel(turn), subtitle: nil))
         }
 
-        let sessions: [UsageSessionMetric] = threads?.data.prefix(3).map { thread in
+        let sessions: [UsageSessionMetric] = threads?.recentThreads.map { thread in
             let title = threadName(thread)
             return UsageSessionMetric(
                 id: thread.id,
@@ -302,10 +309,12 @@ enum CodexSnapshotMapper {
             message = "Spend limit reached"
         } else if account?.account?.type == "apiKey", usage == nil {
             message = "Account usage requires ChatGPT sign-in"
-        } else if !errors.isEmpty, limits.isEmpty || usage == nil {
-            // Surface the first problem whenever a whole section is missing — including partial
-            // failures, where limits render but usage silently didn't (or vice versa).
-            message = errors.sorted { $0.key < $1.key }.first?.value
+        } else if !errors.isEmpty, limits.isEmpty {
+            message = errors[3] ?? "Codex quota temporarily unavailable"
+        } else if !errors.isEmpty, usage == nil {
+            message = errors[4] ?? "Codex token usage temporarily unavailable"
+        } else if !errors.isEmpty, threads == nil {
+            message = errors[5]
         }
 
         return ProviderUsageSnapshot(
@@ -320,7 +329,7 @@ enum CodexSnapshotMapper {
             sessions: sessions,
             planName: planName,
             source: "Codex app-server",
-            fetchedAt: now,
+            fetchedAt: limits.isEmpty ? nil : now,
             statusMessage: message
         )
     }
@@ -551,10 +560,12 @@ private struct CodexAppServerTransport: Sendable {
                 "sortKey": "updated_at",
                 "sortDirection": "desc",
             ], to: input.fileHandleForWriting)
-            try collector.wait(for: [2, 3, 4, 5], timeout: 12)
+            // Keep replies that arrived even if another section times out. Limits must not
+            // disappear because the task list or token history was slow.
+            try? collector.wait(for: [2, 3, 4, 5], timeout: 12)
 
             let threads = collector.exchange.decode(CodexThreadListResponse.self, id: 5)
-            let recentThreads = threads.map { Array($0.data.prefix(3)) } ?? []
+            let recentThreads = threads?.recentThreads ?? []
             let requests = recentThreads.enumerated().map {
                 index, thread in
                 (id: CodexRequestID.firstThreadUsage + index, threadID: thread.id)
@@ -612,6 +623,7 @@ private struct CodexAppServerTransport: Sendable {
             candidates.append(configured)
         }
         candidates += [
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
             "/Applications/ChatGPT.app/Contents/Resources/codex",
             "/Applications/Codex.app/Contents/Resources/codex",
             "/opt/homebrew/bin/codex",

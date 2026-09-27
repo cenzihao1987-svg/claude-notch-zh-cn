@@ -8,15 +8,9 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
     ],
     targets: [
-        .target(
-            name: "CodexWidgetShared",
-            resources: [.copy("Resources/codex-widget-icon.png")],
-            swiftSettings: [.swiftLanguageMode(.v6)]
-        ),
         .executableTarget(
             name: "ClaudeNotch",
             dependencies: [
-                "CodexWidgetShared",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             resources: [
@@ -26,16 +20,6 @@ let package = Package(
                 .copy("Resources/openai.png"),
                 .copy("Resources/workbuddy.png"),
             ],
-            swiftSettings: [.swiftLanguageMode(.v6)]
-        ),
-        .executableTarget(
-            name: "CodexQuotaWidget",
-            dependencies: ["CodexWidgetShared"],
-            swiftSettings: [.swiftLanguageMode(.v6)]
-        ),
-        .executableTarget(
-            name: "CodexWidgetRender",
-            dependencies: ["CodexWidgetShared"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(

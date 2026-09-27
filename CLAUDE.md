@@ -16,14 +16,15 @@
 
 ```bash
 swift build                            # 编译，约 60–110 秒
-ALLOW_ADHOC=1 bash scripts/make-app.sh # 打包 dist/Claude Notch.app
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer bash scripts/make-app.sh
 ```
 
 **不需要完整 Xcode**即可编译。Command Line Tools + Swift 6.2 已验证可 `swift build`，README 中相反的说法在本机不成立。
 
-但 **`swift test` 在本机跑不了**：测试用 swift-testing 写，`Testing` 模块只随完整 Xcode 分发，Command Line Tools 没有，报 `no such module 'Testing'`。这是环境限制，不是代码问题——验证只能靠实跑 app。
+`swift test` 需要本机已安装的完整 Xcode；只选用 Command Line Tools 会报 `no such module 'Testing'`。
 
-`make-app.sh` 默认要求 Developer ID 证书，本机没有，必须带 `ALLOW_ADHOC=1` 走 ad-hoc 签名。**代价**：ad-hoc 签名的标识是 cdhash，每次重新编译都变，钥匙串 ACL 随之失效，于是每次启动新构建都会弹一次钥匙串授权框，**不点它 `ClaudeAPIService` 就一直阻塞在 `SecItemCopyMatching`，取不到任何额度**（表现为界面停在旧值或 `—`，不报错）。跑验证前先确认这个框已被处理。
+本机已有 `Claude Notch Local` 自签名证书，`make-app.sh` 会自动使用它。它让本机重建后的签名身份保持稳定，但不适合作为公开安装包分发；没有 Developer ID 时，GitHub Release 只发布源码归档。
 
 改完必须跑验证，不要只改不验。每项改动的验证方式写在对应设计文档的「验证方式」小节，逐条实测。
 
@@ -32,9 +33,7 @@ ALLOW_ADHOC=1 bash scripts/make-app.sh # 打包 dist/Claude Notch.app
 - `spec/`：设计文档 `YYYY-MM-DD-主题-design.md`，实施计划 `YYYY-MM-DD-主题-plan.md`。**都不放 `docs/`**——上游 `.gitignore` 忽略 `docs/superpowers/`，写进去会被静默丢弃；且 `docs/` 在上游用于 GitHub Pages
 - `Sources/ClaudeNotch/Core/`、`Model/`：数据层，**第一段不动**
 - `Sources/ClaudeNotch/UI/`、`System/`：展示与系统集成层，改造集中在此
-- 不新建无归属的目录、不移动既有文件。WidgetKit 桌面小组件是独立扩展，允许使用
-  `Sources/CodexWidgetShared/`、`Sources/CodexQuotaWidget/` 与仅供视觉验收的
-  `Sources/CodexWidgetRender/`；其清单放在 `Resources/`，不得混入 Claude/Codex 数据源实现
+- 不新建无归属的目录、不移动既有文件。
 
 2026-08-17 新增的 `ClaudeDesktopUsageCache` 是一个只读本地数据源：读取 Claude Desktop
 已经缓存的官方 `/usage` 响应，不自行发请求。它可以新增在 `Core/`，但不得改变缓存内容、

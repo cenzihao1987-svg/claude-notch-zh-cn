@@ -1108,6 +1108,14 @@ struct IslandView: View {
         case "Account usage requires ChatGPT sign-in", "需登录 ChatGPT 才能查看账号用量":
             language.text("需登录 ChatGPT 才能查看账号用量",
                           "Sign in to ChatGPT to view account usage")
+        case "Codex quota temporarily unavailable; showing last value":
+            language.text("Codex 额度暂未更新，显示上次数据", "Codex quota unavailable; showing last value")
+        case "Codex rate limits temporarily unavailable", "Codex quota temporarily unavailable":
+            language.text("Codex 额度暂不可用", "Codex quota temporarily unavailable")
+        case "Codex usage temporarily unavailable", "Codex token usage temporarily unavailable":
+            language.text("Codex Token 用量暂不可用", "Codex token usage temporarily unavailable")
+        case "Codex request failed":
+            language.text("Codex 数据暂不可用", "Codex data temporarily unavailable")
         case "未找到 DeepSeek 配置": language.text("未找到 DeepSeek 配置", "DeepSeek configuration not found")
         case "DeepSeek 配置格式无效": language.text("DeepSeek 配置格式无效", "DeepSeek configuration is invalid")
         case "未找到可用 DeepSeek 配置":

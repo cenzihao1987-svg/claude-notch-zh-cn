@@ -739,8 +739,6 @@ cd /Users/zp/claude-notch-zh-cn && git add Sources/ClaudeNotch/UI/IslandView.swi
     func fetchCodexUsage(includeWhenInactive: Bool = false) {
         guard !isPaused, includeWhenInactive || selectedProvider == .codex else { return }
 
-        // 只在真正在看 Codex 卡片时才碰外部站点。桌面小组件那条每 15 分钟的后台刷新
-        // （includeWhenInactive: true）只需要 7 天额度，不该为它发第三方请求。
         if selectedProvider == .codex {
             // 发出去就不管：codex-reset.com 慢 15 秒，也不该让刘海的数字晚 15 秒。
             // 拉到的值落进 actor 缓存，下面这次刷新用的是上一份。真拿到新值时
@@ -754,7 +752,6 @@ cd /Users/zp/claude-notch-zh-cn && git add Sources/ClaudeNotch/UI/IslandView.swi
             let forecast = await resetForecastService.current()
             let snapshot = await codexProvider.fetch(forecast: forecast)
             self.codexSnapshot = snapshot
-            self.updateCodexWidget(from: snapshot)
         }
     }
 ```

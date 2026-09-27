@@ -46,11 +46,49 @@ import Testing
 
         #expect(snapshot.source == "Codex app-server")
         #expect(!snapshot.limits.isEmpty)
-        #expect(snapshot.lifetimeTokens != nil)
+        #expect(snapshot.lifetimeTokens != nil, "Codex status: \(snapshot.statusMessage ?? "none")")
         if ProcessInfo.processInfo.environment["CODEX_NOTCH_EXPECT_THREAD_USAGE"] == "1",
            !snapshot.sessions.isEmpty {
             #expect(snapshot.sessions.contains { ($0.tokens ?? 0) > 0 })
         }
+    }
+
+    @Test func duplicateTaskIDsDoNotDropCodexUsage() throws {
+        let threads = try decode(CodexThreadListResponse.self, json: """
+        {"data":[
+          {"id":"same","cwd":"/tmp","updatedAt":3},
+          {"id":"same","cwd":"/tmp","updatedAt":2},
+          {"id":"second","cwd":"/tmp","updatedAt":1}
+        ]}
+        """)
+        #expect(threads.recentThreads.map(\.id) == ["same", "second"])
+        let snapshot = CodexSnapshotMapper.make(
+            account: nil, rateLimits: nil, usage: nil, threads: threads, now: Date()
+        )
+        #expect(snapshot.sessions.map(\.id) == ["same", "second"])
+    }
+
+    @MainActor @Test func codexRetainsLastQuotaWhenRefreshFails() {
+        let model = AppModel()
+        let previous = ProviderUsageSnapshot(
+            provider: .codex,
+            limits: [.init(id: "codex-primary", label: "5-Hour", usedFraction: 0.3, resetsAt: nil)],
+            fetchedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        model.applyCodexSnapshot(previous)
+        model.applyCodexSnapshot(.unavailable(.codex, message: "Codex request failed"))
+
+        #expect(model.codexSnapshot.limits == previous.limits)
+        #expect(model.codexSnapshot.fetchedAt == previous.fetchedAt)
+        #expect(model.codexSnapshot.statusMessage == "Codex quota temporarily unavailable; showing last value")
+
+        let refreshed = ProviderUsageSnapshot(
+            provider: .codex,
+            limits: [.init(id: "codex-primary", label: "5-Hour", usedFraction: 0.4, resetsAt: nil)],
+            fetchedAt: Date(timeIntervalSince1970: 2_000)
+        )
+        model.applyCodexSnapshot(refreshed)
+        #expect(model.codexSnapshot == refreshed)
     }
 
     @Test func mapsOfficialAppServerPayloads() throws {
