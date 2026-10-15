@@ -33,6 +33,42 @@ import Testing
         }
     }
 
+    @Test func encryptedLoginDecodesOnlyTheCurrentAccessToken() throws {
+        let envelope = Data("fixture-envelope".utf8).base64EncodedString()
+        let data = try JSONSerialization.data(withJSONObject: [
+            "account": ["uid": "fixture-user"],
+            "auth": ["accessToken": ["$wbEncrypted": 1, "envelope": envelope],
+                     "refreshToken": ["$wbEncrypted": 1, "envelope": "never-read-this"]]
+        ])
+        var decoded: [String] = []
+        let credentials = try WorkBuddyUsageProvider.credentials(from: data, decrypt: {
+            decoded.append($0)
+            return "fixture-current-token"
+        })
+        #expect(decoded == [envelope])
+        #expect(credentials.accessToken == "fixture-current-token")
+        #expect(credentials.userID == "fixture-user")
+        #expect(throws: WorkBuddyUsageError.credentialsProtected) {
+            try WorkBuddyUsageProvider.credentials(from: data)
+        }
+    }
+
+    @Test func unsupportedProtectionNeverFallsBackToUsingCiphertextAsAToken() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "account": ["uid": "fixture-user"],
+            "auth": ["accessToken": ["$wbEncrypted": 1, "scheme": "asym-v1", "envelope": Data("fixture".utf8).base64EncodedString()]]
+        ])
+        #expect(throws: WorkBuddyUsageError.credentialsProtected) {
+            try WorkBuddyUsageProvider.credentials(from: data, decrypt: { _ in
+                Issue.record("Unsupported protection must not be decoded")
+                return ""
+            })
+        }
+        #expect(throws: WorkBuddyUsageError.credentialsInvalid) {
+            try WorkBuddyUsageProvider.credentials(from: Data(#"{"account":{"uid":"fixture"},"auth":{"accessToken":{"$wbEncrypted":1,"envelope":"not base64"}}}"#.utf8))
+        }
+    }
+
     @MainActor @Test func mapsPersonalPackagesWithoutInventingUsage() throws {
         let usage = try WorkBuddyUsageProvider.usage(from: Data("""
         {"data":{"Response":{"Data":{"Accounts":[

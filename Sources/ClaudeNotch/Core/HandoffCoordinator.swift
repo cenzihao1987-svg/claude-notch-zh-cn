@@ -27,17 +27,15 @@ actor HandoffCoordinator {
 
         switch destination {
         case .claudeDesktop:
-            let opened = await MainActor.run {
-                Self.openClaude(cwd: task.cwd, instruction: prepared.instruction)
-            }
+            let opened = await Self.openClaude(cwd: task.cwd, instruction: prepared.instruction)
             if opened {
                 return .opened(destination: .claudeDesktop, packetPath: prepared.packetPath,
                                instruction: prepared.instruction)
             }
             await MainActor.run {
                 Self.copyToPasteboard(prepared.instruction)
-                Self.openClaudeDesktop()
             }
+            await Self.openClaudeDesktop()
             return .fallback(destination: .claudeDesktop, packetPath: prepared.packetPath,
                              instruction: prepared.instruction,
                              reason: "Claude 桌面端深链未打开，交接指令已复制")
@@ -206,24 +204,21 @@ actor HandoffCoordinator {
         return url.path
     }
 
-    @MainActor private static func openClaude(cwd: String, instruction: String) -> Bool {
+    @MainActor private static func openClaude(cwd: String, instruction: String) async -> Bool {
         guard NSWorkspace.shared.urlForApplication(
             withBundleIdentifier: "com.anthropic.claudefordesktop"
         ) != nil,
         let url = HandoffInstructionBuilder.claudeDesktopURL(
             cwd: cwd, instruction: instruction
         ) else { return false }
+        guard await EnvironmentGuardService.shared.prepareForHandoff() else { return false }
         return NSWorkspace.shared.open(url)
     }
 
-    @MainActor private static func openClaudeDesktop() {
-        guard let appURL = NSWorkspace.shared.urlForApplication(
-            withBundleIdentifier: "com.anthropic.claudefordesktop"
-        ) else { return }
-        NSWorkspace.shared.openApplication(
-            at: appURL,
-            configuration: NSWorkspace.OpenConfiguration()
-        )
+    @MainActor private static func openClaudeDesktop() async {
+        // This path also respects a configured cold launch; it never bypasses a failed profile.
+        if !GuardLauncher.runningApplications.isEmpty { return }
+        await EnvironmentGuardService.shared.launchClaude()
     }
 
     @MainActor private static func openCodex(threadID: String) -> Bool {

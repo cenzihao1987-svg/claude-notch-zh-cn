@@ -2,7 +2,7 @@ import SwiftUI
 import ServiceManagement
 
 enum AppInfo {
-    static let version = "0.7.0"
+    static let version = "1.1.0"
     static let tagline = "Claude、Codex 与 DeepSeek"
 }
 

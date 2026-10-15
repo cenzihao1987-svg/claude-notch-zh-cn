@@ -1,7 +1,5 @@
 import SwiftUI
 
-private let clay = Color(red: 0.85, green: 0.47, blue: 0.34)
-
 struct SettingsView: View {
     @Bindable var model: AppModel
     @State private var launchAtLogin = LoginItem.isEnabled
@@ -17,9 +15,10 @@ struct SettingsView: View {
                 general
             }
             .formStyle(.grouped)
+            .background(AppPalette.window)
             footer
         }
-        .tint(clay)
+        .tint(AppPalette.accent)
         // A grouped Form has no intrinsic height — without this the hosting window collapses.
         .frame(width: 500, height: 790)
     }
@@ -163,10 +162,10 @@ private struct AvatarOption: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
-            .background(selected ? clay.opacity(0.12) : Color.primary.opacity(0.04),
+            .background(selected ? AppPalette.accent.opacity(0.12) : AppPalette.field,
                         in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9)
-                .stroke(selected ? clay : .clear, lineWidth: 2))
+                .stroke(selected ? AppPalette.accent : .clear, lineWidth: 2))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)

@@ -5,8 +5,10 @@ struct Ring: View {
     var state: RingState
     var lineWidth: CGFloat = 4
     var drainsClockwise = false
+    var colorOverride: Color? = nil
 
     private var color: Color {
+        if let colorOverride { return colorOverride }
         switch state {
         case .ok: return Color(red: 0.36, green: 0.79, blue: 0.65)       // teal
         case .warn: return Color(red: 0.94, green: 0.62, blue: 0.15)     // amber

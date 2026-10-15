@@ -5,6 +5,14 @@ import SwiftUI
 
 @MainActor @Observable
 final class AppModel {
+    let environmentGuard = EnvironmentGuardService.shared
+
+    var environmentGuardVisible: Bool { selectedProvider == .claude }
+    var collapsedWingWidth: CGFloat { 56 }
+    var collapsedIslandOffset: CGFloat { environmentGuardVisible ? 28 : 0 }
+    var collapsedUsageWidth: CGFloat { environmentGuardVisible ? 112 : 56 }
+    func collapsedIslandWidth(notchWidth: CGFloat) -> CGFloat { notchWidth + 56 * 2 + 24 + (environmentGuardVisible ? 56 : 0) }
+    func collapsedInteractionWidth(notchWidth: CGFloat) -> CGFloat { collapsedIslandWidth(notchWidth: notchWidth) + 24 }
     /// 刷新节奏的可观测性。查看：
     /// `/usr/bin/log show --last 10m --predicate 'subsystem == "com.claudenotch.app"'`
     /// 用 notice 而非 debug —— debug 级别默认根本不记录，等于没有日志。
@@ -116,6 +124,15 @@ final class AppModel {
     private var workBuddyIsStale = false
 
     // MARK: display values (official account sources only)
+
+    var isRefreshingSelectedProvider: Bool {
+        switch selectedProvider {
+        case .claude: claudeInFlight
+        case .codex: codexInFlight
+        case .workbuddy: workBuddyInFlight
+        case .deepseek: deepSeekInFlight
+        }
+    }
 
     private var claudeSessionUsage: Double? {
         limits?.sessionPct ?? statuslineUsage
@@ -314,6 +331,7 @@ final class AppModel {
     private var configURL: URL { home.appendingPathComponent(".claude.json") }
 
     func start() {
+        environmentGuard.start()
         readPlanLimits()
         watcher = LogWatcher { [weak self] urls in
             guard let self, !self.isPaused else { return }
@@ -932,6 +950,7 @@ final class AppModel {
         return Self.expandedDropHeight(
             sessionCount: snapshot.sessions.count,
             hasStatus: snapshot.statusMessage != nil || isStale
+                || (selectedProvider == .workbuddy && !snapshot.stats.isEmpty && snapshot.dailySeries.isEmpty)
         )
     }
     var expandedIslandWidth: CGFloat { 720 }

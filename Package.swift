@@ -19,6 +19,9 @@ let package = Package(
                 .copy("Resources/deepseek.png"),
                 .copy("Resources/openai.png"),
                 .copy("Resources/workbuddy.png"),
+                .copy("Resources/GuardIcons"),
+                .copy("Resources/Guard"),
+                .copy("Resources/WorkBuddy"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

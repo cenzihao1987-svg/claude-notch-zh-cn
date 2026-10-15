@@ -1,0 +1,2 @@
+# Native icon PDFs are binary assets, not whitespace-normalized text.
+*.pdf binary

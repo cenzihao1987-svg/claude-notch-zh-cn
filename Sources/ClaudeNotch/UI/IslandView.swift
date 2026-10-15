@@ -9,6 +9,8 @@ struct IslandRootView: View {
     var body: some View {
         VStack(spacing: 0) {
             IslandView(model: model, presentation: presentation)
+                .offset(x: presentation.isExpanded ? 0 : model.collapsedIslandOffset)
+                .animation(.spring(response: 0.6, dampingFraction: 1.0), value: presentation.isExpanded)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -229,10 +231,10 @@ struct IslandView: View {
     /// The sessions block flips between today's active sessions and all-time top projects on tap.
     @State private var showAllTime = false
 
-    private let wing: CGFloat = 56
+    private var wing: CGFloat { model.collapsedWingWidth }
     private let iconSize: CGFloat = 18
     private let edgeInset: CGFloat = 12
-    private let closedUsageInset: CGFloat = 20
+    private var closedUsageInset: CGFloat { model.environmentGuardVisible ? 12 : 20 }
     private let expandedInset: CGFloat = 24
     private let expandedUsageInset: CGFloat = 32
     private var dropHeight: CGFloat { model.expandedDropHeight }
@@ -240,15 +242,15 @@ struct IslandView: View {
     private var expanded: Bool { presentation.isExpanded }
     private var closedH: CGFloat { max(presentation.topInset, 30) }
     private var gap: CGFloat { presentation.notchWidth }
-    private var closedWidth: CGFloat { wing + gap + wing + edgeInset * 2 }
+    private var closedWidth: CGFloat { model.collapsedIslandWidth(notchWidth: gap) }
     private var islandWidth: CGFloat { expanded ? model.expandedIslandWidth : closedWidth }
     private var provider: ProviderUsageSnapshot { model.activeProviderSnapshot }
     private var language: AppLanguage { model.language }
     private var used: Double { provider.primaryUsage ?? 0 }
     private var displayedUsage: Double { displayFraction(provider.primaryUsage) ?? 0 }
     private var usageAreaWidth: CGFloat {
-        guard expanded else { return wing }
-        return provider.headlineValue == nil ? 88 : 112
+        guard expanded else { return model.collapsedUsageWidth }
+        return (provider.headlineValue == nil ? 88 : 112) + (model.environmentGuardVisible ? 56 : 0)
     }
     /// Loaded once — this is read on every render of the closed row, and hitting the disk per
     /// frame during animations would be pure waste. MainActor because NSImage isn't Sendable.
@@ -395,6 +397,7 @@ struct IslandView: View {
             }
             .opacity(expanded ? (selected ? 1 : 0.42) : (selected ? 1 : 0))
             .allowsHitTesting(expanded || selected)
+            .accessibilityHidden(!expanded && !selected)
             .contentShape(Capsule())
             .onTapGesture {
                 if expanded { model.selectProvider(item) } else { model.cycleProvider() }
@@ -410,12 +413,20 @@ struct IslandView: View {
     private var usageIndicator: some View {
         HStack(spacing: expanded ? 8 : 5) {
             usageSummary
+                .opacity(model.isStale ? 0.5 : 1)
+            if model.environmentGuardVisible {
+                Rectangle().fill(.white.opacity(0.16)).frame(width: 1, height: 14)
+                EnvironmentGuardBadge(model: model) {
+                    let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+                    presentation.isExpanded = false
+                    EnvironmentGuardWindow.present(model: model, on: screen)
+                }
+            }
             if expanded {
                 settingsButton
             }
         }
         .frame(width: usageAreaWidth, height: closedH, alignment: .trailing)
-        .opacity(model.isStale ? 0.5 : 1)
     }
 
     private var usageSummary: some View {
@@ -436,7 +447,9 @@ struct IslandView: View {
                             ? remainingRingState(for: displayedUsage)
                             : ringState(for: used),
                         lineWidth: 3,
-                        drainsClockwise: showsRemainingUsage
+                        drainsClockwise: showsRemainingUsage,
+                        colorOverride: model.selectedProvider == .claude && used < 0.66
+                            ? Color(red: 0.85, green: 0.47, blue: 0.34) : nil
                     )
                         .frame(width: 14, height: 14)
                 }
@@ -458,8 +471,7 @@ struct IslandView: View {
         Button {
             SettingsWindow.present(model: model)
         } label: {
-            Image(systemName: "gearshape")
-                .font(.system(size: 13, weight: .medium))
+            GuardIcon(.settings, size: 15)
                 .foregroundStyle(.white.opacity(0.78))
                 .frame(width: 24, height: 24)
                 .background(Color.white.opacity(0.10), in: Circle())
@@ -565,14 +577,9 @@ struct IslandView: View {
             .padding(.bottom, 4)
             sessionsBlock(limit: AppModel.expandedTaskLimit).frame(width: contentWidth)
             if let message = snapshot.statusMessage {
-                Text(localizedStatus(message)).font(.system(size: 10))
-                    .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(1).truncationMode(.tail)
+                connectionStatus(localizedStatus(message))
             } else if model.isStale {
-                Text(language.text("正在重新连接…", "Reconnecting…")).font(.system(size: 10))
-                    .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                connectionStatus(language.text("正在重新连接…", "Reconnecting…"))
             }
         }
         .frame(width: contentWidth, alignment: .topLeading)
@@ -617,12 +624,16 @@ struct IslandView: View {
                 .frame(width: contentWidth, height: 136, alignment: .topLeading)
                 .opacity(model.isStale ? 0.55 : 1)
             }
-            Text(deepSeekFooter(snapshot))
-                .font(.system(size: 10))
-                .foregroundStyle(snapshot.statusMessage == nil && model.deepSeekSpendError == nil
-                    ? .white.opacity(0.45)
-                    : Color(red: 0.96, green: 0.70, blue: 0.20))
-                .lineLimit(1).truncationMode(.tail)
+            if snapshot.statusMessage != nil || model.deepSeekSpendError != nil {
+                connectionStatus(deepSeekFooter(snapshot))
+            } else if model.isStale {
+                connectionStatus(language.text("正在重新连接…", "Reconnecting…"))
+            } else {
+                Text(deepSeekFooter(snapshot))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .lineLimit(1).truncationMode(.tail)
+            }
         }
         .frame(width: contentWidth, alignment: .topLeading)
     }
@@ -661,17 +672,44 @@ struct IslandView: View {
             }
             sessionsBlock(limit: AppModel.expandedTaskLimit).frame(width: contentWidth)
             if let message = snapshot.statusMessage {
-                Text(localizedStatus(message)).font(.system(size: 10))
-                    .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(1).truncationMode(.tail)
+                connectionStatus(localizedStatus(message))
+            } else if !items.isEmpty && snapshot.dailySeries.isEmpty {
+                connectionStatus(language.text("无法读取 WorkBuddy 本机积分记录", "Unable to read local WorkBuddy credit records"))
             } else if model.isStale {
-                Text(language.text("正在重新连接…", "Reconnecting…")).font(.system(size: 10))
-                    .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                connectionStatus(language.text("正在重新连接…", "Reconnecting…"))
             }
         }
         .frame(width: contentWidth, alignment: .topLeading)
+    }
+
+    private func connectionStatus(_ message: String) -> some View {
+        HStack(spacing: 4) {
+            Text(message)
+                .font(.system(size: 10))
+                .lineLimit(1).truncationMode(.tail)
+            Button { model.refreshNow() } label: {
+                Group {
+                    if model.isRefreshingSelectedProvider {
+                        ProgressView().controlSize(.mini).tint(.white)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                }
+                .frame(width: 12, height: 12)
+                .frame(width: 20, height: 16)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(model.isRefreshingSelectedProvider || model.isPaused)
+            .help(language.text("重试连接", "Retry connection"))
+            .accessibilityLabel(language.text("重试连接", "Retry connection"))
+            .accessibilityValue(model.isRefreshingSelectedProvider
+                ? language.text("正在重试", "Retrying") : "")
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Color(red: 0.96, green: 0.70, blue: 0.20))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func deepSeekFooter(_ snapshot: ProviderUsageSnapshot) -> String {
@@ -1130,6 +1168,8 @@ struct IslandView: View {
             language.text("未找到 WorkBuddy 登录信息", "WorkBuddy sign-in information not found")
         case "WorkBuddy 登录信息无效":
             language.text("WorkBuddy 登录信息无效", "WorkBuddy sign-in information is invalid")
+        case "无法读取 WorkBuddy 加密登录信息":
+            language.text("无法读取 WorkBuddy 加密登录信息", "Unable to read encrypted WorkBuddy sign-in information")
         case "WorkBuddy 登录已过期，请打开 WorkBuddy":
             language.text("WorkBuddy 登录已过期，请打开 WorkBuddy", "WorkBuddy sign-in expired; open WorkBuddy")
         case "WorkBuddy 登录已失效，请打开 WorkBuddy":

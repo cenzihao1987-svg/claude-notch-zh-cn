@@ -2,66 +2,132 @@
 
 # Claude Notch — Simplified Chinese Edition
 
-**See live Claude and Codex quotas in your Mac notch—and safely hand tasks between them.**
+**Quota monitoring and Claude Environment Guard, right in your Mac’s notch.**
 
-[![Release](https://img.shields.io/github/v/release/cenzihao1987-svg/claude-notch-zh-cn?color=CC785C&label=download)](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases/latest)
+Track quota and balances for Claude, Codex, WorkBuddy and DeepSeek, with usage trends and reset times.
+
+New in v1.1.0: configure Claude’s language, region and timezone independently, then compare them with observed web values.
+
+[![Release](https://img.shields.io/github/v/release/cenzihao1987-svg/claude-notch-zh-cn?color=CC785C&label=version)](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases/latest)
 &nbsp; ![macOS 14+](https://img.shields.io/badge/macOS-14+-111111?logo=apple&logoColor=white)
 &nbsp; [![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+[中文](README.md) · [Source releases](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases) · [v1.1.0 overview](RELEASE_NOTES_v1.1.0.md)
+
 </div>
 
-This is a Simplified Chinese edition built on
-[stevemcqueenz/claude-notch-tracker](https://github.com/stevemcqueenz/claude-notch-tracker).
-It retains the upstream MIT license and attribution.
+## Quota and environment status at a glance
 
-[中文说明](README.md)
+![Claude Notch v1.1.0 environment shield in the notch, sample data](docs/media/claude-notch-v1.1.0-notch.png)
 
-## Core capability: visible-context handoff between Claude and Codex
+Quota and the environment shield stay in the notch. Click the shield to open the standalone Claude environment window.
 
-Claude Notch does more than track quotas. Hover over a recent task in the expanded notch to
-**hand it to Claude** or **hand it to Codex**, so the other agent can continue the work.
+## Multi-tool quota monitoring
 
-- **Two-way handoff:** Send a Codex task to a Claude Desktop Code session, or a Claude Code session to Codex.
-- **Verifiable working context:** Carry over the visible goal, progress, working directory, workspace roots, Git branch/change summary, and remaining work.
-- **No hidden-context transfer:** Reasoning, tool calls and outputs, tokens, cookies, private keys, `.env` files, and other secrets are excluded.
-- **Concurrent-edit protection:** Handoff is disabled while the source task is working or thinking; it is available only after the task stops, becomes idle, or awaits confirmation.
-- **Recoverable fallback:** If the destination app or deep link fails, the handoff packet remains available and the instructions are copied for manual continuation.
+Check quota while collapsed; hover to expand for usage, reset times, charts and recent tasks. Each tool displays the information its data sources support.
 
-## Latest UI
+![Claude Notch Codex quota and seven-day plan usage, existing screenshot](docs/media/claude-notch-v0.6.0-codex.png)
 
-![Claude Notch: seven-day Codex plan usage stacked by Sol / Terra / Luna](docs/media/claude-notch-v0.6.0-codex.png)
+The quota dashboard, reusing an existing version screenshot.
 
-![Claude Notch: handing a recent task to Codex or WorkBuddy](docs/media/claude-notch-v0.6.0-handoff.png)
+| Tool | Main information |
+| --- | --- |
+| **Claude** | Five-hour and seven-day quotas and reset times, with applicable plan details, local usage and recent tasks. |
+| **Codex** | Remaining quota, available credits, reset timing, seven-day Sol / Terra / Luna plan usage and recent tasks. |
+| **WorkBuddy** | Remaining and used credits, plan and refresh or expiry time, plus seven-day local credit consumption. |
+| **DeepSeek** | Available, topped-up and granted balances, plus seven-day spend read from a downloaded export. |
 
-![Claude Notch: 18-second interaction demo](docs/media/claude-notch-v0.4.0-demo.gif)
+Temporary read failures retain previous valid quota with a clear stale indication. Click the refresh icon beside a warning to retry.
 
-## Highlights
+## Claude Environment Guard · new in v1.1.0
 
-- Two-way visible-context handoff between Claude and Codex, so work can continue across agents; tasks can also go to WorkBuddy.
-- Chinese / English UI switching with a one-page expanded layout for both Claude and Codex.
-- Hover to expand, smooth expand/collapse movement, and a settings gear at the right edge that opens a standalone settings window.
-- Independent notch windows on every display, with compact activity indicators while collapsed.
-- Claude reads the official Claude Desktop usage cache by default and does not automatically access Keychain data, reducing repeated password prompts.
-- Claude Pro hides inapplicable Fable and credit information; Max keeps the applicable capabilities.
-- Codex numbers and ring both represent **remaining quota**, with 7-day quota, reset time, and recent tasks.
-- Codex deduplicates recent tasks; if a quota read temporarily fails, it shows the last value with a clear warning until live data returns.
-- Seven-day Codex plan usage is stacked by Sol / Terra / Luna, sourced from the same endpoint as the official Analysis page.
-- The Codex reset tile combines local reset timing with third-party parsed Tibo announcement signals; it does not read X directly.
-- WorkBuddy gets its own tab showing remaining quota, plan, and refresh time.
+**Give Claude its own environment, without changing your Mac’s global settings.**
+
+Check environment-related account risk in your notch, configure Claude’s language, region and timezone, and compare them with what its web layer actually reads.
+
+![Claude Notch v1.1.0 configured environment beside observed web values, sample data](docs/media/claude-notch-v1.1.0-environment.png)
+
+Compare saved settings, observed web values and the IP location in one place. The window stays open when it loses focus. Screenshots use sample data; 50 and 10 are example risk index values.
+
+| Capability | What it does |
+| --- | --- |
+| **Dedicated environment** | Set Claude’s language, region and timezone independently, keeping your global Mac settings and everyday habits. |
+| **Observed values** | Compare settings with the web layer’s actual values. Use the IP country and city alongside them to spot unapplied settings or a timezone inconsistent with the route location. |
+| **Visible risk** | Compare the system risk index with the launch-profile estimate, with local signals, route location and client verification details. |
+| **Easy adjustments** | Get a suggested timezone when choosing a region, remember manual timezone choices per region, and launch Claude with the saved profile. |
+
+## Get started in three steps
+
+1. **Open the guard:** select Claude and click the environment shield in the notch.
+2. **Choose a profile:** enable the dedicated profile and select the app language, region and process timezone.
+3. **Launch and verify:** apply the profile, launch Claude and compare the observed web values. Follow the normal-restart prompt when applying changes to a running instance.
+
+Web-layer verification requires a compatible local client adaptation, a complete original backup and local signing. See “Usage and compatibility” below.
+
+## Task handoff and everyday use
+
+- **Task handoff:** transfer visible context for supported recent tasks; handoff is disabled while the source is working or thinking.
+- **Retry on failure:** click the refresh icon beside a connection warning; the loading indicator prevents duplicate requests.
+- **Everyday use:** hover to expand, Chinese / English switching, multiple displays and a standalone settings window.
+
+<details>
+<summary><strong>Existing feature screenshots and demo</strong></summary>
+
+![Claude Notch handing off a recent task, existing screenshot](docs/media/claude-notch-v0.6.0-handoff.png)
+
+Hover over a recent task and choose a destination to continue the work.
+
+![Claude Notch original quota and notch interaction demo](docs/media/claude-notch-v0.4.0-demo.gif)
+
+The original GIF demonstrates quota viewing and notch interaction. It was recorded on an earlier version; the new environment guard is shown in the screenshots above.
+
+</details>
 
 ## Get the source
 
-[Releases](../../releases) provides the latest source archive. There is no DMG for other Macs yet: this machine has only a self-signed certificate, which cannot provide stable cross-device Keychain authorization.
+Requires **macOS 14 or later**. [GitHub Releases](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases) provides published source archives. No DMG or application ZIP for installation on other Macs is offered at this stage.
 
-## Data and Privacy
+<details>
+<summary><strong>Usage and compatibility</strong></summary>
 
-- Claude reads only the local Claude Desktop cache by default. It does not read browser or Claude Code credentials. Claude Desktop credential fallback is available only when the user enables it in Settings.
-- With credential fallback enabled, the first read raises one system Keychain prompt. The resulting 16-byte decryption key is then cached at `~/Library/Application Support/ClaudeNotch/Keys/` with `0600` permissions, and the Keychain is never touched again. This is needed because a build signed without an Apple certificate looks like a different program to macOS after every update, which voids the "Always Allow" grant and would otherwise cost a password on every install. Delete that directory to go back to being asked every time.
-- Codex uses the official local `codex app-server`; prompts, account emails, and login tokens are neither read nor uploaded.
-- Seven-day Codex plan usage comes from a read-only `chatgpt.com` endpoint, the same one behind the Analysis page in Codex settings; credentials and responses stay in memory, and are never persisted or logged.
-- WorkBuddy reads the local CodeBuddy login information and queries `copilot.tencent.com` for quota.
-- Reset reminders request only anonymous public JSON from `codex-reset.com`; that service parses Tibo’s X announcements.
+### Build from source
 
-## License and Credits
+Requires Git and a full Xcode installation supporting Swift 6. This creates a locally signed build and regenerates the repository’s `dist/` directory:
 
-Released under the [MIT License](LICENSE). Special thanks to **Stanislav Kulik**, creator of the original repository, for the design, implementation, and open-source contribution, and to all upstream contributors.
+```bash
+git clone https://github.com/cenzihao1987-svg/claude-notch-zh-cn.git
+cd claude-notch-zh-cn
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ALLOW_ADHOC=1 bash scripts/make-app.sh
+```
+
+Move `dist/Claude Notch.app` to Applications. Local builds are not notarized; follow macOS security prompts on first launch. Public application packages will require Developer ID signing and notarization.
+
+### Launch profiles and web verification
+
+- Profiles default to off and apply only to Claude launched through this tool. Global macOS language, region, timezone and input-method settings stay unchanged.
+- Web verification and region adaptation require a modified local Claude copy. Keep a complete original backup, check the client version, then use the repository’s adaptation script to stage a copy for local signing and replacement. The script does not overwrite the installed client.
+- The currently verified adaptation targets **Claude Desktop 2.37337.1**. Other versions need inspection first; client updates may require reinstalling or adapting the module.
+- An unadapted client, a stopped instance, stale observations or read failures remain unverified. Saved settings are never substituted for observed web values.
+- Turning the profile off offers a normal restart with system settings. A refused or timed-out quit never forces the process to terminate.
+- Your VPN continues to manage networking. The tool does not switch nodes, change proxies or take over traffic.
+
+</details>
+
+<details>
+<summary><strong>Data and privacy</strong></summary>
+
+- The environment collector reads only language, language list, Locale, timezone and instance-verification markers. It does not read chats, accounts, cookies or web storage. Keep the original client backup before adaptation.
+- Optional country and city checks use `api.country.is`. The service sees the request’s public IP but receives no account data. This is the tool’s route reference; VPN routing may give Claude a different route. Disable the check under Verification.
+- Claude quota reads the desktop client’s cache by default. Desktop credentials are used only after enabling the fallback in Settings. The first read may request Keychain permission; the resulting decryption key is stored in the local app data directory with owner-only permissions.
+- Codex quota uses the official local `codex app-server`; plan usage comes from an official read-only endpoint. Credentials and raw responses are not logged.
+- WorkBuddy supports the newer encrypted login format, using only the current access token in memory for quota requests, without renewing it. Daily credits come from local records, without browser cookies.
+- DeepSeek balance uses locally configured credentials, while the spend chart reads the user’s downloaded export.
+- Visible task context is extracted only when handoff is triggered manually. Hidden reasoning, tool calls and outputs, and detected credentials are excluded from handoff packets.
+
+</details>
+
+## License and credits
+
+Built on [stevemcqueenz/claude-notch-tracker](https://github.com/stevemcqueenz/claude-notch-tracker), retaining the upstream copyright and [MIT License](LICENSE). Thanks to **Stanislav Kulik** and all upstream contributors.
+
+Environment icons use the [Lucide collection on iconfont](https://www.iconfont.cn/collections/detail?cid=54062). The Lucide ISC and applicable Feather MIT notices remain included.

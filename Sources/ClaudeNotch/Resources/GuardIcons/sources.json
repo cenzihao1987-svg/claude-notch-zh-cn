@@ -1,0 +1,143 @@
+{
+  "family": "Lucide",
+  "collection": {
+    "id": 54062,
+    "name": "Lucide",
+    "copyright": "opensource",
+    "license": "isc",
+    "opensource_url": "https://lucide.dev/",
+    "icons_count": 1756
+  },
+  "upstreamCommit": "6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2",
+  "icons": [
+    {
+      "name": "clock",
+      "iconfontID": 47658063,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/clock.svg"
+    },
+    {
+      "name": "shield-alert",
+      "iconfontID": 47658934,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/shield-alert.svg"
+    },
+    {
+      "name": "shield-check",
+      "iconfontID": 47658936,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/shield-check.svg"
+    },
+    {
+      "name": "shield-question-mark",
+      "iconfontID": 47658948,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/shield-question-mark.svg"
+    },
+    {
+      "name": "file-question-mark",
+      "iconfontID": 47658255,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/file-question-mark.svg"
+    },
+    {
+      "name": "file-exclamation-point",
+      "iconfontID": 47658234,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/file-exclamation-point.svg"
+    },
+    {
+      "name": "languages",
+      "iconfontID": 47658740,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/languages.svg"
+    },
+    {
+      "name": "globe",
+      "iconfontID": 47658374,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/globe.svg"
+    },
+    {
+      "name": "app-window",
+      "iconfontID": 47657750,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/app-window.svg"
+    },
+    {
+      "name": "wifi",
+      "iconfontID": 47659338,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/wifi.svg"
+    },
+    {
+      "name": "circle-alert",
+      "iconfontID": 47657993,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/circle-alert.svg"
+    },
+    {
+      "name": "circle-question-mark",
+      "iconfontID": 47658023,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/circle-question-mark.svg"
+    },
+    {
+      "name": "chevron-down",
+      "iconfontID": 47657981,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/chevron-down.svg"
+    },
+    {
+      "name": "chevron-up",
+      "iconfontID": 47657987,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/chevron-up.svg"
+    },
+    {
+      "name": "chevron-right",
+      "iconfontID": 47657984,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/chevron-right.svg"
+    },
+    {
+      "name": "settings",
+      "iconfontID": 47658929,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/settings.svg"
+    },
+    {
+      "name": "check",
+      "iconfontID": 47658214,
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/check.svg"
+    },
+    {
+      "name": "shield-alert-large",
+      "derivedFrom": "shield-alert",
+      "change": "Optical stroke width 1 on the 24-unit grid for the 44pt header; body icons retain original 2."
+    },
+    {
+      "name": "shield-check-large",
+      "derivedFrom": "shield-check",
+      "change": "Optical stroke width 1 on the 24-unit grid for the 44pt header; body icons retain original 2."
+    },
+    {
+      "name": "shield-question-mark-large",
+      "derivedFrom": "shield-question-mark",
+      "change": "Optical stroke width 1 on the 24-unit grid for the 44pt header; body icons retain original 2."
+    },
+    {
+      "name": "arrow-down",
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/arrow-down.svg",
+      "iconfontID": 47657770
+    },
+    {
+      "name": "refresh-cw",
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/refresh-cw.svg",
+      "iconfontID": 47658845
+    }
+  ]
+}

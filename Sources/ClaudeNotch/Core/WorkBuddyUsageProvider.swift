@@ -33,6 +33,7 @@ struct WorkBuddyUsageCache: Codable, Equatable, Sendable {
 enum WorkBuddyUsageError: Error, Equatable, Sendable {
     case credentialsMissing
     case credentialsInvalid
+    case credentialsProtected
     case credentialsExpired
     case unauthorized
     case rateLimited
@@ -46,6 +47,7 @@ enum WorkBuddyUsageError: Error, Equatable, Sendable {
         switch self {
         case .credentialsMissing: "未找到 WorkBuddy 登录信息"
         case .credentialsInvalid: "WorkBuddy 登录信息无效"
+        case .credentialsProtected: "无法读取 WorkBuddy 加密登录信息"
         case .credentialsExpired: "WorkBuddy 登录已过期，请打开 WorkBuddy"
         case .unauthorized: "WorkBuddy 登录已失效，请打开 WorkBuddy"
         case .rateLimited: "WorkBuddy 请求过于频繁"
@@ -112,31 +114,20 @@ actor WorkBuddyUsageProvider {
         }
 
         let cache = Self.loadCache(from: cacheURL)
-        let credentials: WorkBuddyCredentials?
-        do {
-            let value = try Self.credentials(from: authURL)
-            credentials = value
-        } catch {
-            credentials = nil
-        }
-
         var messages = [taskError?.message].compactMap { $0 }
         var liveUsage: WorkBuddyAccountUsage?
         var accountFetchedAt: Date?
-        if let credentials {
-            do {
-                if let expiresAt = credentials.expiresAt, expiresAt <= Date() {
-                    throw WorkBuddyUsageError.credentialsExpired
-                }
-                liveUsage = try await Self.fetchAccountUsage(credentials: credentials, session: session)
-                accountFetchedAt = Date()
-            } catch let error as WorkBuddyUsageError {
-                messages.append(error.message)
-            } catch {
-                messages.append(WorkBuddyUsageError.networkUnavailable.message)
+        do {
+            let credentials = try Self.credentials(from: authURL)
+            if let expiresAt = credentials.expiresAt, expiresAt <= Date() {
+                throw WorkBuddyUsageError.credentialsExpired
             }
-        } else {
-            messages.append(WorkBuddyUsageError.credentialsMissing.message)
+            liveUsage = try await Self.fetchAccountUsage(credentials: credentials, session: session)
+            accountFetchedAt = Date()
+        } catch let error as WorkBuddyUsageError {
+            messages.append(error.message)
+        } catch {
+            messages.append(WorkBuddyUsageError.networkUnavailable.message)
         }
 
         let localUsage: [WorkBuddyDailyUsage] = switch await localUsageReader.read(force: forceLocalUsage) {
@@ -164,19 +155,27 @@ actor WorkBuddyUsageProvider {
         guard let data = try? Data(contentsOf: url) else {
             throw WorkBuddyUsageError.credentialsInvalid
         }
-        return try credentials(from: data)
+        return try credentials(from: data, decrypt: { try WorkBuddyCredentialReader.decrypt($0) })
     }
 
-    static func credentials(from data: Data) throws -> WorkBuddyCredentials {
+    static func credentials(from data: Data, decrypt: ((String) throws -> String)? = nil) throws -> WorkBuddyCredentials {
         let file: AuthenticationFile
         do {
             file = try JSONDecoder().decode(AuthenticationFile.self, from: data)
         } catch {
             throw WorkBuddyUsageError.credentialsInvalid
         }
-        let token = file.auth.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
         let userID = file.account.uid.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty, !userID.isEmpty else {
+        guard !userID.isEmpty else { throw WorkBuddyUsageError.credentialsInvalid }
+        let decodedToken: String
+        switch file.auth.accessToken {
+        case .plain(let value): decodedToken = value
+        case .protected(let value):
+            guard value.scheme == nil, let decrypt else { throw WorkBuddyUsageError.credentialsProtected }
+            decodedToken = try decrypt(value.envelope)
+        }
+        let token = decodedToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
             throw WorkBuddyUsageError.credentialsInvalid
         }
         return .init(
@@ -541,9 +540,35 @@ private struct AuthenticationFile: Decodable {
     }
 
     struct Auth: Decodable {
-        let accessToken: String
+        let accessToken: AccessToken
         let domain: String?
         let expiresAt: FlexibleEpoch?
+    }
+
+    enum AccessToken: Decodable {
+        case plain(String)
+        case protected(ProtectedValue)
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let value = try? container.decode(String.self) { self = .plain(value); return }
+            let value = try container.decode(ProtectedValue.self)
+            guard value.marker == 1, !value.envelope.isEmpty, value.envelope.utf8.count <= 24000,
+                  let decoded = Data(base64Encoded: value.envelope), decoded.base64EncodedString() == value.envelope else {
+                throw WorkBuddyUsageError.credentialsInvalid
+            }
+            self = .protected(value)
+        }
+    }
+
+    struct ProtectedValue: Decodable {
+        let marker: Int
+        let envelope: String
+        let scheme: String?
+        enum CodingKeys: String, CodingKey {
+            case marker = "$wbEncrypted"
+            case envelope, scheme
+        }
     }
 }
 

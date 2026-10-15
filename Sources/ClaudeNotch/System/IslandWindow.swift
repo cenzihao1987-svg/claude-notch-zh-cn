@@ -85,6 +85,16 @@ final class IslandWindow {
         panel = NotchPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: panelHeight))
         panel.contentView = hosting
         presentation.onExpansionChange = { [weak self] in self?.expansionChanged() }
+        observeProviderLayout()
+    }
+
+    private func observeProviderLayout() {
+        withObservationTracking { _ = model.selectedProvider } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.updateInteractiveZone()
+                self?.observeProviderLayout()
+            }
+        }
     }
 
     var isExpanded: Bool { presentation.isExpanded }
@@ -129,12 +139,13 @@ final class IslandWindow {
     func updateInteractiveZone() {
         let closedH = max(presentation.topInset, 30)
         let dropH = model.expandedDropHeight
-        let closedZoneW = presentation.notchWidth + 56 * 2 + 24 + 24
+        let closedZoneW = model.collapsedInteractionWidth(notchWidth: presentation.notchWidth)
         let zoneW = isExpanded ? model.expandedIslandWidth : closedZoneW
         let zoneH = (isExpanded ? closedH + dropH + 8 : closedH + 6)
         let w = hosting.bounds.width
         let h = hosting.bounds.height
-        hosting.interactiveRect = CGRect(x: (w - zoneW) / 2, y: h - zoneH, width: zoneW, height: zoneH)
+        hosting.interactiveRect = CGRect(x: (w - zoneW) / 2 + (isExpanded ? 0 : model.collapsedIslandOffset),
+                                         y: h - zoneH, width: zoneW, height: zoneH)
     }
 
     /// Poll the global pointer against an exact activation strip. This avoids SwiftUI retaining a
@@ -144,14 +155,21 @@ final class IslandWindow {
     func updateHoverExpansion() {
         guard !isRetracted, panel.isVisible else { return }
         let closedH = max(presentation.topInset, 30)
-        let closedZoneW = presentation.notchWidth + 56 * 2 + 24 + 24
+        let closedZoneW = model.collapsedInteractionWidth(notchWidth: presentation.notchWidth)
         let panelWidth = panel.contentView?.bounds.width ?? panel.frame.width
         let mouse = panel.mouseLocationOutsideOfEventStream
 
         if !isExpanded {
             hoverExitAt = nil
+            if model.environmentGuardVisible {
+                let visibleWidth = model.collapsedIslandWidth(notchWidth: presentation.notchWidth)
+                let badge = CGRect(x: (panelWidth + visibleWidth) / 2 + model.collapsedIslandOffset - 12 - 40,
+                                   y: panelHeight - closedH, width: 40, height: closedH)
+                // Keep the status control stationary while approaching/clicking it.
+                if badge.contains(mouse) { return }
+            }
             let trigger = CGRect(
-                x: (panelWidth - closedZoneW) / 2,
+                x: (panelWidth - closedZoneW) / 2 + model.collapsedIslandOffset,
                 y: panelHeight - closedH - 10,
                 width: closedZoneW,
                 height: closedH + 10

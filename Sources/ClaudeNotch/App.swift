@@ -22,6 +22,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hoverTimer: Timer?
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        #if DEBUG
+        // An isolated native-window check, without quota refreshes or a second notch overlay.
+        if ProcessInfo.processInfo.arguments.contains("--guard-window-preview")
+            || ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_WINDOW_PREVIEW"] == "1" {
+            if ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_DESIGN_FIXTURE"] == "1" {
+                model.environmentGuard.loadDesignPreview(
+                    running: ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_RUNNING_FIXTURE"] == "1",
+                    rechecking: ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_RECHECKING_FIXTURE"] == "1")
+            } else {
+                model.environmentGuard.start()
+            }
+            // Render the isolated fixture offscreen for visual comparison, without opening
+            // a second notch or interacting with the user's running Claude instance.
+            if ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_DESIGN_FIXTURE"] == "1",
+               let output = ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_RENDER_OUTPUT"] {
+                let compareTheme = ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_THEME_COMPARISON"] == "1"
+                let size = NSSize(width: compareTheme ? GuardVisual.width + 512 : GuardVisual.width,
+                                  height: compareTheme ? 790 : GuardVisual.height)
+                let content: AnyView = compareTheme ? AnyView(HStack(alignment: .top, spacing: 12) {
+                    EnvironmentGuardView(model: model).frame(height: GuardVisual.height)
+                    SettingsView(model: model)
+                }) : AnyView(EnvironmentGuardView(model: model).frame(height: size.height))
+                let hosting = NSHostingView(rootView: content)
+                let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: .borderless, backing: .buffered, defer: false)
+                if ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_LIGHT_FIXTURE"] == "1" {
+                    window.appearance = NSAppearance(named: .aqua)
+                }
+                window.contentView = hosting
+                hosting.frame = NSRect(origin: .zero, size: size)
+                let capture: (String) -> Void = { destination in
+                    window.contentView?.layoutSubtreeIfNeeded()
+                    if let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
+                        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+                        if let png = bitmap.representation(using: .png, properties: [:]) {
+                            try? png.write(to: URL(fileURLWithPath: destination))
+                        }
+                    }
+                }
+                if ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_ANIMATION_FIXTURE"] == "1" {
+                    let stem = URL(fileURLWithPath: output).deletingPathExtension().path
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { capture(stem + "-loading.png") }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.model.environmentGuard.stop() }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { capture(stem + "-midpoint.png") }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { capture(output); NSApp.terminate(nil) }
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { capture(output); NSApp.terminate(nil) }
+                }
+                return
+            }
+            EnvironmentGuardWindow.present(model: model, on: NSScreen.main)
+            return
+        }
+        #endif
         model.start()
         Updater.shared.start()                          // Sparkle auto-updates
         monitor.start(onChange: { [weak self] in self?.sync() },   // display / Claude changes
@@ -178,6 +231,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.isExpanded = windows.values.contains(where: \.isExpanded)
         updateClickMonitor()
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.environmentGuard.stop()
+    }
+
+    #if DEBUG
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag, ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_WINDOW_PREVIEW"] == "1" {
+            EnvironmentGuardWindow.present(model: model, on: NSScreen.main)
+        }
+        return true
+    }
+    #endif
 
     /// While expanded, any click outside the island collapses it.
     private func updateClickMonitor() {

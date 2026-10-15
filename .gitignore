@@ -4,3 +4,8 @@ dist/
 *.xcodeproj
 DerivedData/
 docs/superpowers/
+
+# Local client backups and Python build artifacts are never release inputs.
+backups/
+__pycache__/
+*.py[cod]
