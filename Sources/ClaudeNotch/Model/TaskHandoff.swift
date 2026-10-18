@@ -75,6 +75,7 @@ struct TaskHandoffPacketV1: Codable, Equatable, Sendable {
 }
 
 enum HandoffResult: Equatable, Sendable {
+    case cancelled
     case opened(destination: HandoffDestination, packetPath: String, instruction: String)
     case fallback(destination: HandoffDestination, packetPath: String, instruction: String,
                   reason: String)
@@ -86,11 +87,12 @@ enum HandoffStatus: Equatable, Sendable {
     case opened(String)
     case fallback(String)
     case failed(String)
+    case cancelled(String)
 
     var message: String {
         switch self {
         case .preparing: "正在整理…"
-        case let .opened(message), let .fallback(message), let .failed(message): message
+        case let .opened(message), let .fallback(message), let .failed(message), let .cancelled(message): message
         }
     }
 }

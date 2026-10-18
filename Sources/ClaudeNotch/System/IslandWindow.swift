@@ -9,6 +9,7 @@ final class IslandPresentationState {
             onExpansionChange?()
         }
     }
+    var networkDetailsVisible = false
     var notchWidth: CGFloat
     var topInset: CGFloat
     @ObservationIgnored var onExpansionChange: (() -> Void)?
@@ -68,7 +69,7 @@ final class IslandWindow {
     private(set) var screen: NSScreen
     // The island can now render three recent-task rows plus a status line without clipping.
     // This is only the transparent click-through host; the visible island remains content-sized.
-    private let panelHeight: CGFloat = 380
+    private let panelHeight: CGFloat = 520
     private var hoverExitAt: Date?
     private var ignoreHoverExitUntil: Date?
     private var requireTriggerExit = false
@@ -89,12 +90,23 @@ final class IslandWindow {
     }
 
     private func observeProviderLayout() {
-        withObservationTracking { _ = model.selectedProvider } onChange: { [weak self] in
+        withObservationTracking {
+            _ = model.selectedProvider
+            _ = model.expandedDropHeight
+        } onChange: { [weak self] in
             Task { @MainActor in
                 self?.updateInteractiveZone()
                 self?.observeProviderLayout()
             }
         }
+    }
+
+    func presentNetworkWarning() {
+        guard !isRetracted, panel.isVisible else { return }
+        presentation.isExpanded = true
+        ignoreHoverExitUntil = Date().addingTimeInterval(12)
+        hoverExitAt = nil
+        updateInteractiveZone()
     }
 
     var isExpanded: Bool { presentation.isExpanded }
@@ -182,6 +194,7 @@ final class IslandWindow {
             return
         }
 
+        if presentation.networkDetailsVisible { hoverExitAt = nil; return }
         if let deadline = ignoreHoverExitUntil, Date() < deadline { return }
         ignoreHoverExitUntil = nil
 

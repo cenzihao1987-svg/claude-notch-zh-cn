@@ -5,7 +5,11 @@ import SwiftUI
 
 @MainActor @Observable
 final class AppModel {
-    let environmentGuard = EnvironmentGuardService.shared
+    let environmentGuard: EnvironmentGuardService
+
+    init(environmentGuard: EnvironmentGuardService = .shared) {
+        self.environmentGuard = environmentGuard
+    }
 
     var environmentGuardVisible: Bool { selectedProvider == .claude }
     var collapsedWingWidth: CGFloat { 56 }
@@ -330,7 +334,32 @@ final class AppModel {
     private var usageFileURL: URL { home.appendingPathComponent(".claude/notch-usage.json") }
     private var configURL: URL { home.appendingPathComponent(".claude.json") }
 
+    #if DEBUG
+    func loadGuardDemo(_ scenario: GuardDemoScenario) {
+        environmentGuard.loadGuardDemo(scenario)
+        selectedProvider = .claude
+        language = .chinese
+        hideInFullscreen = false
+        claudeRunning = true
+        snapshot = .empty
+        let now = Date.now
+        snapshot.recentProjects = [
+            .init(id: "demo-notch", name: "刘海额度工具", cost: 0, tokens: 10_800_000, last: now.addingTimeInterval(-44)),
+            .init(id: "demo-icons", name: "SVG 图标动画", cost: 0, tokens: 5_200_000, last: now.addingTimeInterval(-3600)),
+            .init(id: "demo-layout", name: "界面布局优化", cost: 0, tokens: 3_100_000, last: now.addingTimeInterval(-7200))
+        ]
+        limits = .init(sessionPct: 0.55, sessionResetsAt: now.addingTimeInterval(3600),
+                       weeklyPct: 0.19, weeklyResetsAt: now.addingTimeInterval(3 * 86400),
+                       creditsBalanceMinor: 12050, creditsCurrency: "USD", source: "示例数据", fetchedAt: now)
+        claudeDailySeries = [8, 23, 12, 39, 52, 19, 6].enumerated().map { index, value in
+            .init(date: Calendar.current.date(byAdding: .day, value: index - 6, to: now)!, tokens: value * 1_000_000)
+        }
+        isExpanded = true
+    }
+    #endif
+
     func start() {
+        guard !environmentGuard.isDesignPreview else { return }
         environmentGuard.start()
         readPlanLimits()
         watcher = LogWatcher { [weak self] urls in
@@ -386,6 +415,7 @@ final class AppModel {
     }
 
     func canHandoff(_ task: AgentTaskReference) -> Bool {
+        guard !environmentGuard.isDesignPreview else { return false }
         if case .preparing? = handoffStates[task.id] { return false }
         // 不看 isPaused：守卫是按需 stat 一次文件，不依赖轮询，暂停刷新也照样准。
         return !HandoffActivityGuard.isBusy(task)
@@ -417,6 +447,9 @@ final class AppModel {
                 awaitingConfirmation: awaitingConfirmation
             )
             switch result {
+            case .cancelled:
+                self.handoffInstructions[task.id] = nil
+                self.settle(task.id, .cancelled(self.language.text("已取消接力", "Handoff cancelled")))
             case let .opened(destination, _, instruction):
                 self.handoffInstructions[task.id] = instruction
                 self.settle(task.id, .opened(destination.openedMessage(language: self.language)))
@@ -445,6 +478,7 @@ final class AppModel {
     /// 成功了没什么可做的，早点把按钮还回来；
     /// 失败或降级要留时间让人看清，还要够悬停过去点「复制交接指令」。
     private static func linger(for status: HandoffStatus) -> Duration {
+        if case .cancelled = status { return .seconds(3) }
         if case .opened = status { return .seconds(5) }
         return .seconds(20)
     }
@@ -490,6 +524,7 @@ final class AppModel {
 
     /// Menu action: refetch the selected provider immediately and recompute local state.
     func refreshNow() {
+        guard !environmentGuard.isDesignPreview else { return }
         refresh()
         switch selectedProvider {
         case .claude: fetchLimits(force: true)   // fresh Desktop cache first; network if unavailable/stale
@@ -502,6 +537,7 @@ final class AppModel {
     }
 
     func togglePause() {
+        guard !environmentGuard.isDesignPreview else { return }
         isPaused.toggle()
         if !isPaused {
             refresh()
@@ -513,6 +549,7 @@ final class AppModel {
     }
     /// 立刻拉取当前 provider（不 force，不清缓存、不重读 Keychain）。
     private func refreshSelectedProvider() {
+        guard !environmentGuard.isDesignPreview else { return }
         switch selectedProvider {
         case .claude: fetchLimits()
         case .codex: fetchCodexUsage()
@@ -522,6 +559,7 @@ final class AppModel {
     }
     /// `persist: false` 用于前台跟随的自动切换——只临时生效，不覆盖用户手动选择的记忆。
     func selectProvider(_ provider: UsageProviderID, persist: Bool = true) {
+        if environmentGuard.isDesignPreview { selectedProvider = provider; return }
         // 先持久化再判重：自动跟随可能已把 selectedProvider 切成了用户想固定的那个，
         // 此时菜单里再点它一次必须能写进记忆，否则重启会跳回另一个。
         if persist { UserDefaults.standard.set(provider.rawValue, forKey: "selectedProvider") }
@@ -901,6 +939,7 @@ final class AppModel {
     }
 
     func refresh() {
+        guard !environmentGuard.isDesignPreview else { return }
         snapshot = store.snapshot(now: Date(), titles: titlesBySession)
         readStatusFeed()
         claudeDailySeries = buildClaudeDailySeries()
@@ -943,11 +982,14 @@ final class AppModel {
         return 204 + CGFloat(rows) * 30 + (hasStatus ? 20 : 0)
     }
 
+    var networkWarningHeight: CGFloat = 90
+
     /// Read by both the view and the window's click-zone.
     var expandedDropHeight: CGFloat {
-        guard selectedProvider != .deepseek else { return 260 }
+        let warningHeight: CGFloat = environmentGuard.hasNetworkWarning ? networkWarningHeight + 8 : 0
+        guard selectedProvider != .deepseek else { return 260 + warningHeight }
         let snapshot = activeProviderSnapshot
-        return Self.expandedDropHeight(
+        return warningHeight + Self.expandedDropHeight(
             sessionCount: snapshot.sessions.count,
             hasStatus: snapshot.statusMessage != nil || isStale
                 || (selectedProvider == .workbuddy && !snapshot.stats.isEmpty && snapshot.dailySeries.isEmpty)

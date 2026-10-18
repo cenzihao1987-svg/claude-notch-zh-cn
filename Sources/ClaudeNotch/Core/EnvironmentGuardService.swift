@@ -19,6 +19,36 @@ enum GuardProcessReader {
         return parse(data.prefix(size))
     }
 
+    static func proxyEnvironment(pid: Int32) -> [String: String]? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid], size = 0
+        guard sysctl(&mib, u_int(mib.count), nil, &size, nil, 0) == 0, size > 4, size <= 2_097_152 else { return nil }
+        var data = Data(count: size)
+        guard data.withUnsafeMutableBytes({ sysctl(&mib, u_int(mib.count), $0.baseAddress, &size, nil, 0) }) == 0 else { return nil }
+        return parseProxyEnvironment(data.prefix(size))
+    }
+
+    static func parseProxyEnvironment(_ data: Data) -> [String: String]? {
+        guard data.count > 4 else { return nil }
+        let argc = data.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard argc > 0, argc < 65_536 else { return nil }
+        let bytes = Array(data); var cursor = 4
+        func token() -> ArraySlice<UInt8>? {
+            guard cursor < bytes.count, let end = bytes[cursor...].firstIndex(of: 0) else { return nil }
+            let value = bytes[cursor..<end]; cursor = end + 1; return value
+        }
+        guard token() != nil else { return nil }
+        while cursor < bytes.count, bytes[cursor] == 0 { cursor += 1 }
+        for _ in 0..<argc { guard token() != nil else { return nil } }
+        var result: [String: String] = [:]
+        while let raw = token() {
+            guard let equal = raw.firstIndex(of: 61), equal - raw.startIndex <= 16 else { continue }
+            let key = String(decoding: raw[..<equal], as: UTF8.self)
+            guard GuardExecutionInspector.proxyKeys.contains(key.lowercased()), raw.count <= 4096 else { continue }
+            result[key] = String(decoding: raw[raw.index(after: equal)...], as: UTF8.self)
+        }
+        return result
+    }
+
     static func parse(_ data: Data) -> GuardProcessConfiguration? {
         guard data.count > 4 else { return nil }
         let argc = data.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
@@ -93,13 +123,14 @@ actor GuardSignatureInspector {
 }
 
 enum GuardLaunchError: LocalizedError {
-    case notInstalled, invalidProfile, alreadyRunning
+    case notInstalled, invalidProfile, alreadyRunning, locationUnavailable
 
     var errorDescription: String? {
         switch self {
         case .notInstalled: "未找到 Claude Desktop / Claude Desktop not found"
         case .invalidProfile: "请先选择有效的地区和时区 / Choose a valid region and timezone"
         case .alreadyRunning: "请先正常退出 Claude，再按配置启动 / Quit Claude normally before a configured launch"
+        case .locationUnavailable: "出口地区或时区尚未取得，请重新检测或手动配置 / Check the route or choose a manual location first"
         }
     }
 }
@@ -198,29 +229,152 @@ final class EnvironmentGuardService {
     private(set) var isCheckingNetwork = false
     private(set) var isRechecking = false
     private(set) var isLaunching = false
+    private(set) var isClosingClaude = false
     private(set) var windowVisible = false
     private(set) var networkChecksEnabled: Bool
     private(set) var operationMessage: GuardText?
     private(set) var operationFailed = false
     private(set) var isDesignPreview = false
+    private(set) var networkTracker: GuardNetworkTracker
+    private(set) var manualLocationOverride = false
+    private(set) var historyError = false
+    private(set) var networkNoticeGeneration = 0
+    private(set) var exitLogRevision = 0
+    private(set) var connectionMonitor = GuardConnectionMonitor()
+    private(set) var isCheckingConnection = false
+    @ObservationIgnored private var clashTimer: Timer?
+    @ObservationIgnored private var clashTask: Task<Void, Never>?
+    @ObservationIgnored private var clashGeneration = 0
+    @ObservationIgnored private let clashProvider: @MainActor () async -> GuardClashState
+    @ObservationIgnored private let launchNetworkSampler: @MainActor () async -> GuardLaunchNetworkSample
+    @ObservationIgnored private let launchConfirmation: (@MainActor (GuardLaunchNetworkSample, [GuardConnectionIssue]) async -> Bool)?
+    @ObservationIgnored private let notificationSender: @MainActor ([GuardConnectionIssue]) async -> Void
+    @ObservationIgnored private let launchActions: GuardLaunchActions
+    @ObservationIgnored private var notificationTask: Task<Void, Never>?
+    @ObservationIgnored private var lastLoggedRisk: GuardLoggedRisk?
+    @ObservationIgnored private let activityProvider: @MainActor () -> GuardDesktopActivity
+    @ObservationIgnored private var activityRevision = 0
+    @ObservationIgnored private var needsExposureRuleLog = false
+    @ObservationIgnored private var previewLogEntries: [GuardNetworkLogEntry] = []
+    private let historyStore: GuardHistoryStore
+    private let historyReadFailed: Bool
+    @ObservationIgnored private var exitRecheckTask: Task<Void, Never>?
+    @ObservationIgnored private var lastJournaledByFamily: [String: GuardExit] = [:]
+    @ObservationIgnored private var locationVerificationCache: [String: (Date, GuardGeoVerification)] = [:]
+    var exitAlert: GuardExitChange? { snapshot.networkBehavior.change ?? networkTracker.alert }
+    var followingIP: Bool { !manualLocationOverride }
+    var hasNetworkWarning: Bool {
+        hasGeographicWarning || !connectionMonitor.visibleIssues.isEmpty
+    }
+    var hasGeographicWarning: Bool { snapshot.networkBehavior.kind != nil && snapshot.networkBehavior.identifier != networkTracker.history.ignoredWarning }
+    var canConfirmNewExit: Bool { exitAlert != nil && networkTracker.candidate == nil && snapshot.networkIsFresh(at: .now) }
+
+
 
     #if DEBUG
     func loadDesignPreview() { loadDesignPreview(running: false) }
 
-    func loadDesignPreview(running: Bool, rechecking: Bool = false) {
+    func loadDesignPreview(running: Bool, rechecking: Bool = false, networkWarning: Bool = false) {
         stop()
         isDesignPreview = true
+        networkTracker = .init()
+        connectionMonitor = .init()
+        historyError = false
+        manualLocationOverride = false
         isRechecking = rechecking
+        snapshot.desktopActivity = running ? .active : .inactive
         systemEnvironment = .init(languageCode: "zh-CN", localeIdentifier: "zh_CN", timeZoneIdentifier: "Asia/Shanghai")
         profile = GuardProfile(enabled: true, languageCode: "en-US", localeIdentifier: "en_US", timeZoneIdentifier: "America/Los_Angeles")
         snapshot = GuardSnapshot(client: .init(path: "/Applications/Claude.app", version: "1.49585.0", pid: running ? Int32.max : nil,
                                                launchedAt: running ? .now : nil, signature: .local, runningInstanceCount: running ? 1 : 0), checkedAt: .now,
                                  network: .init(countryCode: "TR", fetchedAt: .now, city: "Istanbul"), networkInvalidated: false)
+        snapshot.desktopActivity = running ? .active : .inactive
+        if networkWarning {
+            let base = Date.now.addingTimeInterval(-120)
+            for (ip, country, second) in [("203.0.113.1", "US", 0.0), ("203.0.113.2", "TR", 10.0),
+                ("203.0.113.2", "TR", 15.0), ("203.0.113.3", "SG", 30.0), ("203.0.113.3", "SG", 35.0)] {
+                networkTracker.observe(GuardExit(.init(countryCode: country, fetchedAt: base.addingTimeInterval(second), ip: ip), activity: .active)!, verification: .verified)
+            }
+            updateNetworkBehavior()
+        }
         if running {
             snapshot.webEnvironment = .observed(.init(protocol: 1, session: "preview", pid: Int32.max,
                 capturedAt: Date.now.timeIntervalSince1970 * 1000, candidateCount: 1, failedCount: 0,
                 frames: [.init(context: "claude.ai", language: "en-US", languages: ["en-US"], locale: "en-US", timeZone: "America/Los_Angeles")]))
         }
+    }
+    func loadGuardDemo(_ scenario: GuardDemoScenario) {
+        loadDesignPreview(running: true)
+        let base = Date.now.addingTimeInterval(-120)
+        let demoActivity: GuardDesktopActivity = scenario == .inactive ? .inactive : .active
+        let connectionScenario = [.sameCountry, .clashRule, .clashUnknown, .connectionCombined, .connectionHealthy].contains(scenario)
+        if connectionScenario { connectionMonitor.setActive(true) }
+        snapshot.desktopActivity = demoActivity
+        if scenario == .inactive, let client = snapshot.client {
+            snapshot.client = .init(path: client.path, version: client.version, pid: nil, launchedAt: nil, signature: client.signature)
+            snapshot.webEnvironment = .unavailable(.notRunning)
+        }
+        func sample(_ ip: String, _ country: String, _ second: Double, _ verification: GuardGeoVerification = .verified) {
+            let zone = country == "TR" ? "Europe/Istanbul" : country == "US" ? "America/Los_Angeles" : "Asia/Singapore"
+            let observation = GuardNetworkObservation(countryCode: country, fetchedAt: base.addingTimeInterval(second), ip: ip, timeZone: zone)
+            networkTracker.observe(GuardExit(observation, activity: demoActivity)!, verification: verification)
+            if connectionScenario { connectionMonitor.observe(GuardExit(observation, activity: demoActivity)!) }
+            snapshot.network = observation
+        }
+        let ipv6 = scenario == .longIPv6
+        sample(ipv6 ? "2001:db8:1234:5678::1" : "203.0.113.1", "US", 0)
+        if scenario == .sameCountry || scenario == .connectionCombined {
+            for number in 2...5 {
+                sample("203.0.113.\(number)", "US", Double(number * 10))
+                sample("203.0.113.\(number)", "US", Double(number * 10 + 5))
+            }
+        } else if connectionScenario {
+            // Stable exit: the mode, rather than a fabricated geographic change, drives this case.
+        } else if scenario == .dualStack {
+            sample("2001:db8::1", "TR", 30)
+        } else {
+            sample(ipv6 ? "2001:db8:9876:5432::2" : "203.0.113.2", "TR", 10)
+            sample(ipv6 ? "2001:db8:9876:5432::2" : "203.0.113.2", "TR", 15,
+                   scenario == .unverified ? .conflict : .verified)
+            if scenario == .repeated || scenario == .roundTrip || scenario == .longIPv6 || scenario == .inactive {
+                let country = scenario == .roundTrip ? "US" : "SG"
+                sample(ipv6 ? "2001:db8:abcd:ef01::3" : "203.0.113.3", country, 30)
+                sample(ipv6 ? "2001:db8:abcd:ef01::3" : "203.0.113.3", country, 35)
+            }
+        }
+        if let network = snapshot.network {
+            profile.localeIdentifier = "en_" + network.countryCode
+            profile.timeZoneIdentifier = network.timeZone ?? "Europe/Istanbul"
+        }
+        if connectionScenario {
+            connectionMonitor.observeClash(scenario == .clashUnknown ? .unknown :
+                (scenario == .clashRule || scenario == .connectionCombined ? .rule : .global), at: .now)
+        }
+        updateNetworkBehavior()
+        if let network = snapshot.network, let exit = GuardExit(network, activity: snapshot.desktopActivity) {
+            if previewLogEntries.isEmpty, let baseline = networkTracker.history.lastLaunch {
+                previewLogEntries.append(.init(recordID: UUID(), kind: "tool-start", exit: baseline,
+                    recordedAt: base, risk: .init(systemTotal: 50, configuredTotal: 10, networkPoints: 0,
+                        minimumTotal: 0, behavior: nil, locationUnverified: false, desktopActivity: demoActivity)))
+            }
+            if previewLogEntries.count == 1 {
+                for event in (networkTracker.history.geographicTransitions ?? []).dropLast() {
+                    previewLogEntries.append(.init(recordID: UUID(), kind: "exit-change", exit: event.current,
+                        recordedAt: event.current.observedAt, previous: event.previous,
+                        risk: .init(systemTotal: 80, configuredTotal: 50, networkPoints: 30, minimumTotal: 50,
+                                    behavior: .anomalous, locationUnverified: false, desktopActivity: .active)))
+                }
+            }
+            lastLoggedRisk = previewLogEntries.last?.risk
+            appendExitLog(exit, kind: "exit-change", previous: snapshot.networkBehavior.change?.previous ?? networkTracker.history.lastLaunch)
+        }
+        networkNoticeGeneration += 1
+    }
+    func refreshGuardDemoClock() {
+        guard isDesignPreview, let old = snapshot.network else { return }
+        snapshot.network = .init(countryCode: old.countryCode, fetchedAt: .now, city: old.city,
+            subdivision: old.subdivision, ip: old.ip, timeZone: old.timeZone)
+        snapshot.checkedAt = .now
     }
     #endif
 
@@ -242,16 +396,41 @@ final class EnvironmentGuardService {
     @ObservationIgnored private var preferredPath: String?
     @ObservationIgnored private var recheckGeneration = 0
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, historyStore: GuardHistoryStore = .standard,
+         activityProvider: @escaping @MainActor () -> GuardDesktopActivity = GuardDesktopActivityReader.current,
+         clashProvider: @escaping @MainActor () async -> GuardClashState = GuardClashReader.read,
+         launchNetworkSampler: @escaping @MainActor () async -> GuardLaunchNetworkSample = GuardLaunchNetworkProbe.sample,
+         launchConfirmation: (@MainActor (GuardLaunchNetworkSample, [GuardConnectionIssue]) async -> Bool)? = nil,
+         notificationSender: @escaping @MainActor ([GuardConnectionIssue]) async -> Void = { await GuardNetworkNotifier.shared.send($0) },
+         launchActions: GuardLaunchActions = .init()) {
+        self.activityProvider = activityProvider
+        self.clashProvider = clashProvider
+        self.launchNetworkSampler = launchNetworkSampler
+        self.launchConfirmation = launchConfirmation
+        self.notificationSender = notificationSender
+        self.launchActions = launchActions
         self.defaults = defaults
-        profile = defaults.data(forKey: Self.profileKey).flatMap { try? JSONDecoder().decode(GuardProfile.self, from: $0) } ?? .init()
+        self.historyStore = historyStore
+        do {
+            let history = try historyStore.load()
+            networkTracker = .init(history: history); historyReadFailed = false
+            needsExposureRuleLog = history.exposurePolicyVersion != 1
+                && (!(history.geographicTransitions ?? []).isEmpty || history.incident != nil)
+        }
+        catch { networkTracker = .init(); historyReadFailed = true; historyError = true }
+        var initialProfile = defaults.data(forKey: Self.profileKey).flatMap { try? JSONDecoder().decode(GuardProfile.self, from: $0) } ?? .init()
+        if initialProfile.timeZoneOverrides != nil { initialProfile.timeZoneOverrides = [:] }
+        profile = initialProfile
         receipt = defaults.data(forKey: Self.receiptKey).flatMap { try? JSONDecoder().decode(LaunchReceipt.self, from: $0) }
         networkChecksEnabled = defaults.object(forKey: "environmentGuard.networkChecksEnabled") as? Bool ?? true
         preferredPath = defaults.string(forKey: "environmentGuard.appPath")
+        connectionMonitor = .init(baselines: networkTracker.history.connectionBaselines
+            ?? (networkTracker.history.lastExposedByFamily ?? [:]).filter { $0.value.desktopActivity == .active })
+        lastLoggedRisk = try? historyStore.readJournal(limit: 1).entries.first?.risk
     }
 
     var findings: [GuardFinding] {
-        GuardEvaluator.findings(profile: profile, snapshot: snapshot, networkEnabled: networkChecksEnabled)
+        GuardEvaluator.findings(profile: profile, snapshot: snapshot, networkEnabled: networkChecksEnabled) + extendedFindings
     }
 
     var issues: [GuardFinding] {
@@ -271,11 +450,11 @@ final class EnvironmentGuardService {
     var configuredRisk: GuardRiskAssessment {
         let environment = profile.isValid ? GuardSystemEnvironment(languageCode: profile.languageCode,
             localeIdentifier: profile.localeIdentifier, timeZoneIdentifier: profile.timeZoneIdentifier) : nil
-        return GuardRiskEvaluator.assess(environment: environment, snapshot: snapshot, networkEnabled: networkChecksEnabled)
+        return GuardRiskEvaluator.assess(environment: environment, snapshot: snapshot, networkEnabled: networkChecksEnabled, estimating: true)
     }
 
     var verificationFindings: [GuardFinding] {
-        let order = ["signature", "network", "chromium"]
+        let order = ["signature", "network", "chromium", "claude-exposure", "exit-history", "exit-geography", "terminal-proxy", "cowork-runtime", "history-storage"]
         return order.compactMap { id in findings.first { $0.id == id } }
     }
     var verificationReminderCount: Int { verificationFindings.filter { $0.state == .attention }.count }
@@ -284,14 +463,24 @@ final class EnvironmentGuardService {
     func start() {
         guard !started, !isDesignPreview else { return }
         started = true
+        networkTracker.usageBoundaryChanged()
         let workspace = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             observe(workspace, name: name) { [weak self] id in
+                if GuardClashReader.bundleIDs.contains(id ?? "") {
+                    self?.refreshConnectionStatus()
+                    self?.refreshNetworkIfNeeded(force: true)
+                    return
+                }
                 guard GuardLauncher.bundleIDs.contains(id ?? "") else { return }
+                self?.activityRevision += 1
+                self?.networkTracker.usageBoundaryChanged()
+                self?.refreshNetworkIfNeeded(force: true)
                 self?.webGeneration += 1
                 self?.webTask?.cancel()
                 self?.snapshot.webEnvironment = .unavailable(.waitingForPage)
                 self?.scheduleRefresh()
+                self?.refreshConnectionStatus()
             }
         }
         observe(workspace, name: NSWorkspace.didWakeNotification) { [weak self] _ in self?.invalidateNetwork() }
@@ -303,6 +492,7 @@ final class EnvironmentGuardService {
         }
         monitor.start(queue: DispatchQueue(label: "claude-notch-environment-network", qos: .utility))
         pathMonitor = monitor
+        refreshConnectionStatus()
         refresh()
     }
 
@@ -322,6 +512,14 @@ final class EnvironmentGuardService {
         debounce?.cancel()
         localTask?.cancel()
         networkTask?.cancel()
+        exitRecheckTask?.cancel()
+        exitRecheckTask = nil
+        clashGeneration += 1
+        clashTask?.cancel(); clashTask = nil
+        clashTimer?.invalidate(); clashTimer = nil
+        isCheckingConnection = false
+        connectionMonitor.setActive(false)
+        notificationTask?.cancel(); notificationTask = nil
         pathMonitor?.cancel()
         pathMonitor = nil
         periodicTimer?.invalidate()
@@ -347,17 +545,22 @@ final class EnvironmentGuardService {
     }
 
     func updateProfile(_ value: GuardProfile) {
+        if value.countryCode != profile.countryCode || value.timeZoneIdentifier != profile.timeZoneIdentifier {
+            manualLocationOverride = true
+        }
         profile = value
         operationMessage = nil
-        guard !isDesignPreview else { return }
+        if isDesignPreview { recordRiskIfChanged(); return }
         if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: Self.profileKey) }
         refreshWebGuard()
         updatePeriodicTimer()
+        recordRiskIfChanged()
+        refresh()
     }
 
     func setNetworkChecksEnabled(_ enabled: Bool) {
         networkChecksEnabled = enabled
-        guard !isDesignPreview else { return }
+        if isDesignPreview { recordRiskIfChanged(); return }
         defaults.set(enabled, forKey: "environmentGuard.networkChecksEnabled")
         if !enabled {
             networkGeneration += 1
@@ -365,8 +568,11 @@ final class EnvironmentGuardService {
             networkTask = nil
             isCheckingNetwork = false
             snapshot.networkInvalidated = true
+            networkTracker.invalidateCandidate()
+            updateNetworkBehavior()
         } else { refreshNetworkIfNeeded(force: true) }
         updatePeriodicTimer()
+        recordRiskIfChanged()
     }
 
     func selectApplication() {
@@ -436,9 +642,9 @@ final class EnvironmentGuardService {
                 observation?.process = process
             }
             guard !Task.isCancelled, let self else { return }
-            self.isChecking = false
             // A process can quit/update while signature verification is in flight.
             if self.currentInstanceKey() != Self.instanceKey(client) {
+                self.isChecking = false
                 self.refresh(force: force)
                 return
             }
@@ -446,7 +652,22 @@ final class EnvironmentGuardService {
                 self.snapshot.webEnvironment = .unavailable(observation?.pid == nil ? .notRunning : .waitingForPage)
             }
             self.snapshot.client = observation
+            let inspectionClient = observation
+            let expectedProfile = self.profile
+            let inspection = await Task.detached(priority: .utility) {
+                let processes = GuardExecutionInspector.processes()
+                return (GuardExecutionInspector.proxyCheck(shellProcesses: processes), GuardExecutionInspector.runtimeCheck(client: inspectionClient, processes: processes, expectedProfile: expectedProfile))
+            }.value
+            guard !Task.isCancelled else { self.isChecking = false; return }
+            guard self.currentInstanceKey() == Self.instanceKey(inspectionClient) else {
+                self.isChecking = false; self.refresh(force: force); return
+            }
+            self.isChecking = false
+            self.snapshot.proxyCheck = inspection.0
+            self.snapshot.runtimeCheck = inspection.1
+            self.updateNetworkBehavior()
             self.snapshot.checkedAt = .now
+            self.recordRiskIfChanged()
             self.refreshWebGuard()
             self.updatePeriodicTimer()
             self.refreshNetworkIfNeeded(force: force)
@@ -478,6 +699,11 @@ final class EnvironmentGuardService {
     }
 
     private func invalidateNetwork() {
+        connectionMonitor.invalidateCandidates()
+        refreshConnectionStatus()
+        networkTracker.invalidateCandidate()
+        updateNetworkBehavior()
+        exitRecheckTask?.cancel()
         snapshot.networkInvalidated = true
         networkGeneration += 1
         networkTask?.cancel()
@@ -487,7 +713,7 @@ final class EnvironmentGuardService {
     }
 
     private var shouldProbeNetwork: Bool {
-        networkChecksEnabled && (windowVisible || !GuardLauncher.runningApplications.isEmpty)
+        networkChecksEnabled && started
     }
 
     private func refreshWebGuard() {
@@ -506,10 +732,21 @@ final class EnvironmentGuardService {
                   enabled == self.profile.enabled, self.receipt?.webSession == receipt?.webSession,
                   self.currentInstanceKey() == Self.instanceKey(client) else { return }
             self.snapshot.webEnvironment = state
+            self.recordRiskIfChanged()
         }
     }
 
     private func updatePeriodicTimer() {
+        if started && networkChecksEnabled && clashTimer == nil {
+            clashTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.refreshConnectionStatus() }
+            }
+            clashTimer?.tolerance = 3
+        } else if !started || !networkChecksEnabled {
+            clashTimer?.invalidate(); clashTimer = nil
+            clashGeneration += 1; clashTask?.cancel(); clashTask = nil
+            isCheckingConnection = false; connectionMonitor.setActive(false)
+        }
         let webNeeded = profile.enabled && snapshot.client?.pid != nil
         if webNeeded, webTimer == nil {
             webTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
@@ -520,12 +757,17 @@ final class EnvironmentGuardService {
             webTimer?.invalidate()
             webTimer = nil
         }
-        let needed = windowVisible || !GuardLauncher.runningApplications.isEmpty
-        if needed, periodicTimer == nil, started {
-            periodicTimer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.refresh() }
+        let needed = started && networkChecksEnabled
+        let interval: TimeInterval = connectionMonitor.active ? 30 : 60
+        if needed, periodicTimer == nil || periodicTimer?.timeInterval != interval, started {
+            periodicTimer?.invalidate()
+            periodicTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    self?.refresh()
+                    self?.refreshNetworkIfNeeded(force: true)
+                }
             }
-            periodicTimer?.tolerance = 30
+            periodicTimer?.tolerance = 5
         } else if !needed {
             periodicTimer?.invalidate()
             periodicTimer = nil
@@ -543,6 +785,8 @@ final class EnvironmentGuardService {
               force || !snapshot.networkIsFresh(at: .now) else { return }
         isCheckingNetwork = true
         let generation = networkGeneration
+        let exposureRevision = activityRevision
+        let startingActivity = activityProvider()
         networkTask = Task { [weak self] in
             let configuration = URLSessionConfiguration.ephemeral
             configuration.timeoutIntervalForRequest = 5
@@ -553,7 +797,7 @@ final class EnvironmentGuardService {
             let session = URLSession(configuration: configuration)
             defer { session.invalidateAndCancel() }
             do {
-                let (data, response) = try await session.data(from: URL(string: "https://api.country.is/?fields=city,subdivision")!)
+                let (data, response) = try await session.data(from: URL(string: "https://api.country.is/?fields=city,subdivision,location")!)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200, data.count < 65_536 else {
                     throw URLError(.badServerResponse)
                 }
@@ -563,36 +807,332 @@ final class EnvironmentGuardService {
                     throw URLError(.cannotParseResponse)
                 }
                 guard !Task.isCancelled, let self, self.networkGeneration == generation else { return }
-                self.snapshot.network = .init(countryCode: result.country, fetchedAt: .now,
-                                              city: result.city, subdivision: result.subdivision)
-                self.snapshot.networkInvalidated = false
-                self.snapshot.networkError = nil
+                guard let rawIP = result.ip, let ip = GuardExit.normalizedIP(rawIP) else { throw URLError(.cannotParseResponse) }
+                let zone = result.location?.time_zone.flatMap { TimeZone(identifier: $0) == nil ? nil : $0 }
+                let observation = GuardNetworkObservation(countryCode: result.country, fetchedAt: .now,
+                    city: result.city, subdivision: result.subdivision, ip: ip, timeZone: zone)
+                var activity = GuardDesktopActivityReader.sample(start: startingActivity, end: self.activityProvider(), lifecycleChanged: self.activityRevision != exposureRevision)
+                let exit = GuardExit(observation, activity: activity)!
+                var verification = GuardGeoVerification.unchecked
+                if self.networkTracker.requiresLocationVerification(exit),
+                   let candidate = self.networkTracker.candidate(for: exit), candidate.sameRoute(as: exit),
+                   exit.observedAt.timeIntervalSince(candidate.observedAt) >= 5 {
+                    verification = await self.verifyLocation(exit, session: session)
+                }
+                guard !Task.isCancelled, self.networkGeneration == generation else { return }
+                activity = GuardDesktopActivityReader.sample(start: startingActivity, end: self.activityProvider(), lifecycleChanged: self.activityRevision != exposureRevision)
+                self.applyNetworkObservation(observation, verification: verification, activity: activity)
             } catch {
                 guard !Task.isCancelled, let self, self.networkGeneration == generation else { return }
+                self.networkTracker.invalidateCandidate()
+                self.updateNetworkBehavior()
                 self.snapshot.networkInvalidated = true
                 self.snapshot.networkError = .init("出口查询失败，保留上次结果。", "Network lookup failed; the previous observation is retained.")
+                self.connectionMonitor.failedExit()
+                self.connectionStateDidChange()
+                self.recordRiskIfChanged(kind: "check-failed")
             }
             guard let self, self.networkGeneration == generation else { return }
             self.isCheckingNetwork = false
             self.networkTask = nil
+            if self.activityRevision != exposureRevision { self.refreshNetworkIfNeeded(force: true) }
         }
+    }
+
+    func restoreIPFollowing() {
+        manualLocationOverride = false
+        applyIPDefaults()
+    }
+
+    private func applyIPDefaults() {
+        guard !manualLocationOverride, snapshot.networkIsFresh(at: .now), let network = snapshot.network else { return }
+        let previous = profile
+        let base = Locale(identifier: profile.languageCode).language.languageCode?.identifier ?? "en"
+        profile.localeIdentifier = "\(base)_\(network.countryCode)"
+        profile.timeZoneIdentifier = network.timeZone ?? ""
+        if !isDesignPreview, let data = try? JSONEncoder().encode(profile) { defaults.set(data, forKey: Self.profileKey) }
+        refreshWebGuard()
+        if !isDesignPreview, previous != profile { refresh() }
+    }
+
+    @discardableResult
+    func applyNetworkObservation(_ observation: GuardNetworkObservation, verification: GuardGeoVerification = .unchecked,
+                                 activity: GuardDesktopActivity? = nil) -> Bool {
+        guard let ip = observation.ip, GuardExit.normalizedIP(ip) != nil,
+              Locale.Region.isoRegions.contains(where: { $0.identifier == observation.countryCode }),
+              (0..<180).contains(Date.now.timeIntervalSince(observation.fetchedAt)),
+              snapshot.network.map({ observation.fetchedAt > $0.fetchedAt }) ?? true else { return false }
+        snapshot.desktopActivity = activity ?? (isDesignPreview ? snapshot.desktopActivity : activityProvider())
+        snapshot.network = observation
+        snapshot.networkInvalidated = false
+        snapshot.networkError = nil
+        processNetworkObservation(verification: verification)
+        return true
+    }
+
+    private func processNetworkObservation(verification: GuardGeoVerification) {
+        guard let network = snapshot.network, let exit = GuardExit(network, activity: snapshot.desktopActivity) else { return }
+        if !isDesignPreview {
+            connectionMonitor.setActive(networkChecksEnabled && snapshot.desktopActivity == .active)
+            connectionMonitor.observe(exit)
+            connectionStateDidChange()
+        }
+        let first = !networkTracker.hasLaunchSample
+        let family = GuardNetworkTracker.family(exit)
+        let previousExit = lastJournaledByFamily[family] ?? networkTracker.previousObserved(for: exit)
+        let changed = lastJournaledByFamily[family].map { !exit.sameRoute(as: $0) } ?? true
+        networkTracker.observe(exit, verification: verification)
+        updateNetworkBehavior()
+        do {
+            if !isDesignPreview && !historyReadFailed { try historyStore.save(networkTracker.history) }
+            historyError = historyReadFailed
+        } catch { historyError = true }
+        snapshot.historyUnavailable = historyError
+        if !snapshot.networkBehavior.locationUnverified,
+           networkTracker.candidate(for: exit).map({ networkTracker.previous(for: $0)?.country == $0.country }) ?? true { applyIPDefaults() }
+        if first || changed {
+            let kind = needsExposureRuleLog ? "rule-updated" : first ? "tool-start" : "exit-change"
+            if appendExitLog(exit, kind: kind, previous: previousExit) {
+                lastJournaledByFamily[family] = exit
+                needsExposureRuleLog = false
+            }
+        } else {
+            recordRiskIfChanged(kind: lastLoggedRisk?.desktopActivity != snapshot.desktopActivity ? "usage-change" : "risk-change")
+        }
+        exitRecheckTask?.cancel()
+        if networkTracker.candidate(for: exit).map({ exit.observedAt.timeIntervalSince($0.observedAt) < 5 }) == true
+            || connectionMonitor.candidates[family] != nil {
+            exitRecheckTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                self?.refreshNetworkIfNeeded(force: true)
+            }
+        }
+    }
+
+    private func updateNetworkBehavior() {
+        let previous = snapshot.networkBehavior
+        let next = networkTracker.assessment(at: .now)
+        snapshot.exitChange = networkTracker.alert
+        snapshot.networkBehavior = next
+        if hasNetworkWarning, next.shouldExpand, next.identifier != previous.identifier,
+           next.points >= previous.points || previous.kind == nil {
+            networkNoticeGeneration += 1
+        }
+    }
+
+    private func verifyLocation(_ exit: GuardExit, session: URLSession) async -> GuardGeoVerification {
+        guard let previous = networkTracker.previous(for: exit) else { return .unavailable }
+        let key = previous.ip + previous.country + "-" + exit.ip + exit.country
+        if let cached = locationVerificationCache[key], Date.now.timeIntervalSince(cached.0) < 60 { return cached.1 }
+        var state = GuardGeoVerification.verified
+        for item in [previous, exit] {
+            do {
+                var components = URLComponents(url: URL(string: "https://ipwho.is/")!.appendingPathComponent(item.ip), resolvingAgainstBaseURL: false)!
+                components.queryItems = [.init(name: "fields", value: "success,ip,country_code")]
+                let (data, response) = try await session.data(from: components.url!)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200, data.count < 8192 else { throw URLError(.badServerResponse) }
+                state = GuardLocationVerifier.evaluate(data, expected: item)
+                if state != .verified { break }
+            } catch { state = .unavailable; break }
+        }
+        locationVerificationCache[key] = (.now, state)
+        if locationVerificationCache.count > 32 { locationVerificationCache = [key: (.now, state)] }
+        return state
+    }
+
+    func ignoreNetworkRisk() {
+        notificationTask?.cancel(); notificationTask = nil
+        connectionMonitor.acknowledge()
+        networkTracker.ignoreWarning(at: .now)
+        persistNetworkHistory()
+        if let network = snapshot.network, let exit = GuardExit(network, activity: snapshot.desktopActivity) { appendExitLog(exit, kind: "user-ignored") }
+    }
+
+    private var currentLoggedRisk: GuardLoggedRisk {
+        .init(systemTotal: currentRisk.total, configuredTotal: configuredRisk.total, networkPoints: configuredRisk.network,
+            minimumTotal: snapshot.networkBehavior.minimumTotal, behavior: snapshot.networkBehavior.kind,
+            locationUnverified: snapshot.networkBehavior.locationUnverified, desktopActivity: snapshot.desktopActivity)
+    }
+
+    @discardableResult
+    private func appendExitLog(_ exit: GuardExit, kind: String, previous: GuardExit? = nil) -> Bool {
+        let risk = currentLoggedRisk
+        if isDesignPreview {
+            previewLogEntries.append(.init(recordID: UUID(), kind: kind, exit: exit, recordedAt: .now, previous: previous, risk: risk, previousRisk: lastLoggedRisk))
+        } else {
+            do { try historyStore.appendObservation(exit, kind: kind, previous: previous, risk: risk, previousRisk: lastLoggedRisk, recordedAt: .now) }
+            catch { historyError = true; snapshot.historyUnavailable = true; return false }
+        }
+        lastLoggedRisk = risk
+        exitLogRevision += 1
+        return true
+    }
+
+    private func recordRiskIfChanged(kind: String = "risk-change") {
+        guard networkTracker.hasLaunchSample, let network = snapshot.network,
+              let exit = GuardExit(network, activity: snapshot.desktopActivity), currentLoggedRisk != lastLoggedRisk else { return }
+        appendExitLog(exit, kind: kind)
+    }
+
+    func loadExitHistory(before: UInt64? = nil) async throws -> GuardNetworkLogPage {
+        if isDesignPreview {
+            let end = min(before ?? UInt64(previewLogEntries.count), UInt64(previewLogEntries.count))
+            let start = end > 50 ? end - 50 : 0
+            return .init(entries: Array(previewLogEntries[Int(start)..<Int(end)].reversed()), nextOffset: start > 0 ? start : nil)
+        }
+        let store = historyStore
+        return try await Task.detached(priority: .utility) { try store.readJournal(before: before) }.value
+    }
+
+    private func persistNetworkHistory() {
+        do {
+            if !isDesignPreview && !historyReadFailed { try historyStore.save(networkTracker.history) }
+        } catch { historyError = true; snapshot.historyUnavailable = true }
+    }
+
+    func closeClaudeForNetworkRisk(language: AppLanguage = .chinese) async {
+        guard !isClosingClaude, !isLaunching else { return }
+        #if DEBUG
+        if isDesignPreview {
+            isClosingClaude = true
+            let instance = snapshot.client?.launchedAt
+            try? await Task.sleep(for: .milliseconds(300))
+            if snapshot.client?.launchedAt == instance {
+                if let client = snapshot.client {
+                    snapshot.client = .init(path: client.path, version: client.version, pid: nil,
+                        launchedAt: nil, signature: client.signature, runningInstanceCount: 0)
+                }
+                snapshot.webEnvironment = .unavailable(.notRunning)
+                snapshot.desktopActivity = .inactive
+                connectionMonitor.setActive(false)
+                networkTracker.usageBoundaryChanged()
+                recordRiskIfChanged(kind: "usage-change")
+            }
+            isClosingClaude = false
+            return
+        }
+        #endif
+        guard !isDesignPreview else { return }
+        isClosingClaude = true
+        defer { isClosingClaude = false }
+        do {
+            try await GuardRestartCoordinator.run(requestExit: {
+                GuardLauncher.runningApplications.map { $0.terminate() }.allSatisfy { $0 }
+            }, isRunning: { !GuardLauncher.runningApplications.isEmpty }, launch: {})
+            refresh(force: true)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = language.text("Claude 未能退出", "Could not quit Claude")
+            alert.informativeText = (error as? GuardRestartError) == .timedOut
+                ? language.text("等待超过 15 秒，Claude 尚未退出。请完成客户端中的退出确认后重试。", "Claude has not quit after 15 seconds. Complete any quit confirmation in the client and retry.")
+                : error.localizedDescription
+            alert.addButton(withTitle: language.text("好", "OK"))
+            alert.runModal()
+        }
+    }
+
+    func confirmNewExit() {
+        connectionMonitor.confirmExit()
+        guard snapshot.networkIsFresh(at: .now), let network = snapshot.network, let exit = GuardExit(network, activity: snapshot.desktopActivity),
+              networkTracker.confirm(exit) else { refreshNetworkIfNeeded(force: true); return }
+        snapshot.exitChange = nil
+        networkTracker.ignoreWarning(at: .now)
+        do {
+            if !isDesignPreview {
+                if !historyReadFailed { try historyStore.save(networkTracker.history) }
+            }
+            historyError = historyReadFailed
+        } catch { historyError = true }
+        snapshot.historyUnavailable = historyError
+        appendExitLog(exit, kind: "user-confirmed")
+    }
+
+    func showExitHistory() {
+        guard !isDesignPreview else { return }
+        let file = historyStore.url.deletingLastPathComponent().appendingPathComponent("network-exits.jsonl")
+        if FileManager.default.fileExists(atPath: file.path) { NSWorkspace.shared.activateFileViewerSelecting([file]) }
+    }
+
+    private var extendedFindings: [GuardFinding] {
+        let proxy = snapshot.proxyCheck, runtime = snapshot.runtimeCheck
+        let old = networkTracker.previousLaunch?.label(.chinese) ?? "首次启动"
+        let new = snapshot.network.flatMap { GuardExit($0, activity: snapshot.desktopActivity) }?.label(.chinese) ?? "待检测"
+        var result: [GuardFinding] = [
+            .init(id: "exit-history", title: .init("出口 IP 记录", "Exit IP history"),
+                  value: .init(historyError ? "出口记录未核验" : exitAlert != nil ? "IP 出口改变" : networkTracker.hasLaunchSample ? "出口基准已记录" : "等待出口检测", historyError ? "Exit history unverified" : exitAlert != nil ? "Exit IP changed" : networkTracker.hasLaunchSample ? "Exit baseline recorded" : "Waiting for exit check"),
+                  detail: .init("上次工具启动：\(old)\n本次出口：\(new)\n仅本机记录；确认或忽略不会清除跨区历史与近期风险。",
+                                "Previous tool launch: \(networkTracker.previousLaunch?.label(.english) ?? "First launch")\nCurrent: \(snapshot.network.flatMap { GuardExit($0, activity: snapshot.desktopActivity) }?.label(.english) ?? "Not checked")\nHistory stays local. Confirmation or dismissal does not erase geographic history or risk."),
+                  state: historyError ? .unknown : exitAlert != nil ? .attention : networkTracker.hasLaunchSample ? .information : .unknown,
+                  actionID: exitAlert != nil ? "exit-change" : nil),
+            .init(id: "terminal-proxy", title: .init("终端旧代理排查", "Terminal proxy check"),
+                  value: proxy.summary,
+                  detail: .init((proxy.definitions + proxy.activeVariables).joined(separator: "\n") + "\n只读检查本工具继承的变量、常见 shell 启动文件与 Code 用户设置；不执行文件、不显示代理密码，定义存在不等于已生效。",
+                                (proxy.definitions + proxy.activeVariables).joined(separator: "\n") + "\nRead-only inherited variables, shell startup files and Code user settings. Definitions alone do not prove active routing; credentials are omitted."),
+                  state: proxy.state,
+                  actionID: proxy.points > 0 ? "terminal-proxy" : nil),
+            .init(id: "cowork-runtime", title: .init("Cowork 执行链路", "Cowork execution chain"), value: runtime.location,
+                  detail: .init((runtime.execution + runtime.environmentSamples + runtime.browsers).joined(separator: "\n") + "\n仅按可信进程路径与父子关系核验；没有本机进程不表示已确认云端，网页读数不代替后台或浏览器的实际出口。",
+                                (runtime.execution + runtime.environmentSamples + runtime.browsers).joined(separator: "\n") + "\nTrusted process ancestry only. No local process does not prove cloud execution. Page readings do not verify background or browser egress."),
+                  state: runtime.backgroundMismatch ? .attention : runtime.desktopRunning ? .unknown : .information,
+                  actionID: runtime.backgroundMismatch ? "runtime-environment" : nil)
+        ]
+        let behavior = snapshot.networkBehavior
+        let activity = snapshot.desktopActivity
+        let activityValue = activity == .inactive ? GuardText("未运行期间豁免", "Inactive-period exemption")
+            : activity == .active ? GuardText("检测到运行／执行进程", "Execution observed") : GuardText("运行状态待核验", "Activity unverified")
+        result.append(.init(id: "claude-exposure", title: .init("运行期出口计分", "Exposure-scoped exit scoring"), value: activityValue,
+            detail: .init("只有桌面端或可信 Claude／Cowork 执行进程运行时观测到的出口，才进入跨区累计。未运行时的 IP 变化仍保留日志，不新增异常下限；运行前后比较实际使用出口，中间离线跳转不计成额外往返。"
+                + (networkTracker.hasLegacyExposureHistory ? "\n旧记录没有保存运行状态，原日志和原评分保留，未纳入新版已确认累计。" : ""),
+                          "Only exits observed while Desktop or trusted execution runs contribute to region counts. Inactive changes stay in the log without new anomaly floors. Resumed use compares actual exposed endpoints; offline intermediate hops are excluded."
+                + (networkTracker.hasLegacyExposureHistory ? "\nLegacy records lack activity evidence; original logs and scores remain but do not contribute to new confirmed counts." : "")),
+            state: activity == .unknown || networkTracker.hasLegacyExposureHistory ? .unknown : .information))
+        if behavior.kind != nil {
+            result.append(.init(id: "exit-geography", title: .init("出口地理变化", "Exit geography"),
+                value: .init(behavior.title(.chinese), behavior.title(.english)),
+                detail: .init("24 小时运行期跨区 \(behavior.crossRegionCount) 次，涉及 \(behavior.regionCount) 个国家／地区；1 小时已核验异常 \(behavior.anomalousCount) 次。\n同国 IP 和城市变化不计分。远距跨区先复核并核对第二定位来源；一次风险至少 50，连续或往返至少 80。稳定有效观察 2 小时后解除 80 下限，24 小时后解除 50 下限；忽略不清除评分。",
+                              "24h exposure-period region changes: \(behavior.crossRegionCount); regions: \(behavior.regionCount); verified anomalies in 1h: \(behavior.anomalousCount).\nSame-country IP/city changes add no points. Remote switches need repeated samples and two location sources. One anomaly sets a minimum of 50, repeated/return switches 80. Verified stability reduces these floors after 2h/24h. Ignoring preserves risk."),
+                state: behavior.locationUnverified ? .unknown : .attention, actionID: "exit-geography"))
+        }
+        if historyError {
+            result.append(.init(id: "history-storage", title: .init("出口记录存储", "Exit history storage"), value: .init("记录未完成", "History unavailable"),
+                                detail: .init("本机出口记录无法读取或写入，不能确认下次启动比较已准备好。", "Local history could not be read or saved; next-launch comparison is not verified."), state: .unknown))
+        }
+        return result
+    }
+
+    private func prepareAutomaticLocation(allowUnverified: Bool = false) async throws {
+        guard profile.enabled, followingIP, networkChecksEnabled else { return }
+        if allowUnverified && profile.isValid { return }
+        if !snapshot.networkIsFresh(at: .now) {
+            refreshNetworkIfNeeded(force: true)
+            await networkTask?.value
+        }
+        guard snapshot.networkIsFresh(at: .now), profile.isValid else { throw GuardLaunchError.locationUnavailable }
     }
 
     @discardableResult
     func launchClaude() async -> Bool {
         guard !isDesignPreview else { return false }
-        guard !isLaunching else { return false }
+        guard !isLaunching, !isClosingClaude else { return false }
         isLaunching = true
         defer { isLaunching = false }
         operationMessage = nil
+        operationFailed = false
         do {
-            guard let url = GuardLauncher.installedURL(preferredPath: preferredPath) else { throw GuardLaunchError.notInstalled }
+            guard let url = launchActions.installedURL(preferredPath) else { throw GuardLaunchError.notInstalled }
+            guard let approval = try await authorizeNetworkLaunch() else { return false }
+            try await prepareAutomaticLocation(allowUnverified: approval.exit == nil)
             let launchProfile = profile
-            if launchProfile.enabled, !GuardLauncher.runningApplications.isEmpty { throw GuardLaunchError.alreadyRunning }
+            if launchProfile.enabled, !launchActions.running().isEmpty { throw GuardLaunchError.alreadyRunning }
             let webSession = launchProfile.enabled ? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() : nil
             if webSession != nil { try GuardWebEnvironmentReader.prepareDirectory() }
             let configuration = try GuardLauncher.configuration(profile: launchProfile, webSession: webSession)
-            let app = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+            guard let finalApproval = try await authorizeNetworkLaunch(approved: approval.fingerprint) else { return false }
+            try Task.checkCancellation()
+            guard profile == launchProfile else { throw GuardRestartError.profileChanged }
+            if launchProfile.enabled, !launchActions.running().isEmpty { throw GuardLaunchError.alreadyRunning }
+            let app = try await launchActions.open(url, configuration)
+            recordConnectionLaunch(finalApproval)
             if launchProfile.enabled {
                 let record = LaunchReceipt(pid: app.processIdentifier, launchedAt: app.launchDate ?? .now,
                                            appPath: url.path, profile: launchProfile, webSession: webSession)
@@ -625,25 +1165,34 @@ final class EnvironmentGuardService {
     }
 
     private func restartClaude() async -> Bool {
-        guard !isDesignPreview, !isLaunching else { return false }
-        let launchProfile = profile
+        guard !isDesignPreview, !isLaunching, !isClosingClaude else { return false }
         isLaunching = true
         defer { isLaunching = false }
         operationMessage = nil
+        operationFailed = false
         do {
-            guard let url = GuardLauncher.installedURL(preferredPath: preferredPath) else { throw GuardLaunchError.notInstalled }
+            guard let url = launchActions.installedURL(preferredPath) else { throw GuardLaunchError.notInstalled }
+            guard let approval = try await authorizeNetworkLaunch() else { return false }
+            try await prepareAutomaticLocation(allowUnverified: approval.exit == nil)
+            let launchProfile = profile
             let webSession = launchProfile.enabled ? UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() : nil
             if webSession != nil { try GuardWebEnvironmentReader.prepareDirectory() }
             let configuration = try GuardLauncher.configuration(profile: launchProfile.enabled ? launchProfile : nil, webSession: webSession)
+            guard let beforeQuit = try await authorizeNetworkLaunch(approved: approval.fingerprint) else { return false }
             var launchedApp: NSRunningApplication?
             try await GuardRestartCoordinator.run(requestExit: {
-                let answers = GuardLauncher.runningApplications.map { $0.terminate() }
-                return answers.allSatisfy { $0 }
-            }, isRunning: { !GuardLauncher.runningApplications.isEmpty }, launch: {
+                return self.launchActions.quit()
+            }, isRunning: { !self.launchActions.running().isEmpty }, launch: {
                 guard self.profile == launchProfile else { throw GuardRestartError.profileChanged }
-                guard GuardLauncher.runningApplications.isEmpty else { throw GuardLaunchError.alreadyRunning }
-                launchedApp = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+                guard self.launchActions.running().isEmpty else { throw GuardLaunchError.alreadyRunning }
+                guard let finalApproval = try await self.authorizeNetworkLaunch(approved: beforeQuit.fingerprint) else { return }
+                try Task.checkCancellation()
+                guard self.profile == launchProfile else { throw GuardRestartError.profileChanged }
+                guard self.launchActions.running().isEmpty else { throw GuardLaunchError.alreadyRunning }
+                launchedApp = try await self.launchActions.open(url, configuration)
+                self.recordConnectionLaunch(finalApproval)
             })
+            guard launchedApp != nil else { return false }
             if launchProfile.enabled, let app = launchedApp {
                 let record = LaunchReceipt(pid: app.processIdentifier, launchedAt: app.launchDate ?? .now,
                                            appPath: url.path, profile: launchProfile, webSession: webSession)
@@ -666,7 +1215,98 @@ final class EnvironmentGuardService {
 
     /// Preserve the ordinary deep-link flow unless a configured cold launch is required.
     func prepareForHandoff() async -> Bool {
-        guard profile.enabled, GuardLauncher.runningApplications.isEmpty else { return true }
-        return await launchClaude()
+        guard !isDesignPreview, !isLaunching, !isClosingClaude else { return false }
+        if launchActions.running().isEmpty { return await launchClaude() }
+        isLaunching = true; operationFailed = false
+        defer { isLaunching = false }
+        do { return try await authorizeNetworkLaunch() != nil }
+        catch { operationFailed = true; operationMessage = .init(error.localizedDescription, error.localizedDescription); return false }
+    }
+
+    func recheckConnection() {
+        guard !isDesignPreview else { return }
+        refreshConnectionStatus()
+        refreshNetworkIfNeeded(force: true)
+    }
+
+    func applyClashObservation(_ state: GuardClashState, activity: GuardDesktopActivity) {
+        connectionMonitor.setActive(networkChecksEnabled && activity == .active)
+        connectionMonitor.observeClash(state, at: .now)
+        connectionStateDidChange()
+    }
+
+    private func refreshConnectionStatus() {
+        guard started, networkChecksEnabled, !isDesignPreview else { return }
+        let wasActive = connectionMonitor.active
+        connectionMonitor.setActive(activityProvider() == .active)
+        updatePeriodicTimer()
+        if connectionMonitor.active != wasActive { refreshNetworkIfNeeded(force: true) }
+        guard !isCheckingConnection else { return }
+        isCheckingConnection = true
+        let generation = clashGeneration
+        clashTask = Task { [weak self, clashProvider] in
+            let mode = await clashProvider()
+            guard let self, !Task.isCancelled, generation == self.clashGeneration else { return }
+            self.applyClashObservation(mode, activity: self.activityProvider())
+            self.isCheckingConnection = false
+            self.clashTask = nil
+            self.connectionStateDidChange()
+        }
+    }
+
+    private func connectionStateDidChange() {
+        let baselines = connectionMonitor.baselines
+        if networkTracker.history.connectionBaselines != baselines {
+            networkTracker.setConnectionBaselines(baselines)
+            persistNetworkHistory()
+        }
+        guard !isDesignPreview, !isLaunching else { return }
+        if connectionMonitor.visibleIssues.isEmpty { notificationTask?.cancel(); notificationTask = nil }
+        let fresh = connectionMonitor.takeNewNotice()
+        guard !fresh.isEmpty else { return }
+        networkNoticeGeneration += 1
+        let visible = connectionMonitor.visibleIssues
+        notificationTask?.cancel()
+        notificationTask = Task { [notificationSender] in await notificationSender(visible) }
+    }
+
+    private func recordConnectionLaunch(_ sample: GuardLaunchNetworkSample) {
+        connectionMonitor.setActive(true)
+        connectionMonitor.acceptLaunch(sample.exit)
+        connectionMonitor.observeClash(sample.clash, at: .now)
+        if let exit = sample.exit { connectionMonitor.observe(exit) }
+        else { connectionMonitor.failedExit() }
+        // The user just accepted these conditions; keep them visible without immediately
+        // sending the same warning again after the launch notification arrives.
+        _ = connectionMonitor.takeNewNotice()
+        networkTracker.setConnectionBaselines(connectionMonitor.baselines)
+        persistNetworkHistory()
+    }
+
+    private func authorizeNetworkLaunch(approved: String? = nil) async throws -> GuardLaunchNetworkSample? {
+        let baseline = connectionMonitor.baselines
+        let result = try await GuardLaunchNetworkGate.authorize(baselines: baseline, approved: approved, sample: {
+            if self.networkChecksEnabled { return await self.launchNetworkSampler() }
+            return .init(exit: nil, clash: await self.clashProvider())
+        }, confirm: { sample, issues in
+            if let confirm = self.launchConfirmation { return await confirm(sample, issues) }
+            let language = AppLanguage.saved
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = language.text("启动 Claude 前，请确认网络", "Check the network before launching Claude")
+            alert.informativeText = issues.map { issue in
+                issue.message(language) + (issue.change.map { "\n\($0.previous.ip) → \($0.current.ip)" } ?? "")
+            }.joined(separator: "\n") + "\n" + language.text("本次检测：", "Checked: ") + Date.now.formatted(date: .omitted, time: .standard)
+            alert.addButton(withTitle: language.text("取消", "Cancel"))
+            alert.addButton(withTitle: language.text("仍然启动", "Launch anyway"))
+            alert.buttons[0].keyEquivalent = "\r"
+            alert.buttons[1].keyEquivalent = ""
+            return alert.runModal() == .alertSecondButtonReturn
+        })
+        if result == nil {
+            operationFailed = false
+            operationMessage = .init("已取消启动，未继续执行。", "Launch cancelled; no further action was taken.")
+        }
+        return result
     }
 }

@@ -6,15 +6,27 @@
 
 查看 Claude、Codex、WorkBuddy、DeepSeek 的额度与余额，掌握用量、消费趋势和重置时间。
 
-v1.1.0 新增 Claude 环境守护：独立设置语言、地区和时区，并核对网页层实际读到的值。
+v1.1.2 新增网络预警与启动前检查：出口改变及时提醒，启动、重启和任务接力前先确认网络。
 
 [![Release](https://img.shields.io/github/v/release/cenzihao1987-svg/claude-notch-zh-cn?color=CC785C&label=版本)](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases/latest)
 &nbsp; ![macOS 14+](https://img.shields.io/badge/macOS-14+-111111?logo=apple&logoColor=white)
 &nbsp; [![MIT License](https://img.shields.io/badge/许可证-MIT-blue)](LICENSE)
 
-[English](README.en.md) · [获取源码](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases) · [v1.1.0 更新介绍](RELEASE_NOTES_v1.1.0.md)
+[English](README.en.md) · [获取源码](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases) · [v1.1.2 更新介绍](RELEASE_NOTES_v1.1.2.md)
 
 </div>
+
+## 网络异常，刘海及时提醒 · v1.1.2
+
+![Claude Notch v1.1.2 完整刘海展开界面及底部网络异常提示，全部为演示数据](docs/media/claude-notch-v1.1.2-network-warning.png)
+
+完整展开界面：额度、近七天图表和近期任务下方显示异常 tips；右上角网络图标位于历史图标左侧，操作区仅保留“忽略”“关闭”。图中的额度、任务名和 IP 均为演示数据。
+
+- **出口变化提醒**：包括同国换 IP，经间隔 5 秒复测后提醒；IPv4、IPv6 分别比较。
+- **Clash 模式检查**：读取内核当前模式；非全局、未运行或无法核验时提示。
+- **启动前确认**：从本工具启动、重启或任务接力前统一检查。异常时可取消，也可明确选择“仍然启动”；取消后停止后续操作。
+- **自动复查与便捷处理**：运行中每 30 秒复查，网络切换和应用启动等事件触发即时检查。支持系统通知，通过网络图标打开当前使用的 VPN 工具。
+- **历史与评分独立**：本机记录出口与风险变化；同国换 IP 提醒不增加跨区评分，忽略不清除风险历史。
 
 ## 常驻刘海，额度与守护随时可见
 
@@ -110,6 +122,14 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ALLOW_ADHOC=1 bash scri
 - 未适配、未启动、读数过期或读取失败时，界面保留待核验状态；网页实际值来自运行中的页面，不用配置值补齐。
 - 关闭专属配置后可选择正常重启 Claude，恢复系统配置；拒绝退出或退出超时不会强制结束进程。
 - 网络继续由你的 VPN 管理。本工具不切换节点、不修改代理，也不接管流量。
+
+### 本地版本 v1.1.2：启动前与运行中网络预警
+
+- Claude运行时，同国或跨国的公网IP变化经复测后提醒；Clash Verge为规则、直连、未运行或无法核验时也会提醒。全局模式读取内核实时状态，不用TUN开关或保存的配置代替。
+- 从本工具启动、重启及任务接力前统一检查，异常或未知时默认取消，也可明确选择“仍然启动”。取消后不再执行备用启动或复制交接指令；外部启动只能在发现运行后提醒。
+- 刘海自动展开，并发送macOS通知；首次需要允许通知。通知不可用不影响刘海内的提示。后台每30秒自动复查；预警保留“忽略”“关闭”，右上角网络图标可打开正在使用的VPN工具，多客户端可选择。
+- 同国换IP提醒不增加跨区评分，忽略不清除历史风险。关闭后台网络检测时不继续后台查询，启动前会提示出口未核验。
+- 详情及验证范围见 [设计记录](spec/2026-10-18-network-warning-release-design.md)。
 
 </details>
 

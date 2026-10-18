@@ -7,7 +7,7 @@ import Testing
     let system = GuardSystemEnvironment(languageCode: "zh-CN", localeIdentifier: "zh_CN", timeZoneIdentifier: "Asia/Shanghai")
     let configured = GuardSystemEnvironment(languageCode: "en-US", localeIdentifier: "en_US", timeZoneIdentifier: "America/Los_Angeles")
 
-    private func snapshot(country: String = "TR", signature: GuardSignature = .local) -> GuardSnapshot {
+    private func snapshot(country: String = "US", signature: GuardSignature = .local) -> GuardSnapshot {
         .init(client: .init(path: "/Applications/Claude.app", version: "test", pid: nil, launchedAt: nil, signature: signature),
               checkedAt: now, network: .init(countryCode: country, fetchedAt: now), networkInvalidated: false)
     }
@@ -42,7 +42,7 @@ import Testing
     @Test func unsupportedRouteAndFailedSignatureSurviveConfigurationChange() {
         let value = snapshot(country: "CN", signature: .invalid(code: -1))
         #expect(score(system, snapshot: value).total == 100)
-        #expect(score(configured, snapshot: value).total == 60)
+        #expect(score(configured, snapshot: value).total == 80)
         #expect(score(configured, snapshot: snapshot(signature: .valid(publisher: "TEST"))).total == 0)
     }
 
@@ -197,13 +197,13 @@ import Testing
         let service = EnvironmentGuardService(defaults: defaults)
         service.loadDesignPreview()
         #expect(service.currentRisk.total == 50)
-        #expect(service.configuredRisk.total == 10)
+        #expect(service.configuredRisk.total == 30)
         #expect(service.verificationReminderCount == 2)
-        #expect(service.verificationUnknownCount == 1)
+        #expect(service.verificationUnknownCount == 3)
         var profile = service.profile
         profile.enabled = false
         service.updateProfile(profile)
-        #expect(service.configuredRisk.total == 10)
+        #expect(service.configuredRisk.total == 30)
         #expect(defaults.data(forKey: EnvironmentGuardService.profileKey) == nil)
     }
     #endif

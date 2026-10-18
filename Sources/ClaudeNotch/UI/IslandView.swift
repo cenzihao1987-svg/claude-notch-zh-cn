@@ -167,6 +167,7 @@ private struct HandoffSessionRow: View {
 
     private func statusColor(_ status: HandoffStatus) -> Color {
         switch status {
+        case .cancelled: .white.opacity(0.65)
         case .preparing: .white.opacity(0.65)
         case .opened: Color(red: 0.30, green: 0.85, blue: 0.45)
         case .fallback: Color(red: 1.00, green: 0.65, blue: 0.22)
@@ -214,7 +215,7 @@ private struct HandoffSessionRow: View {
     private func statusAllowsCopy(_ status: HandoffStatus) -> Bool {
         switch status {
         case .fallback, .failed: true
-        case .preparing, .opened: false
+        case .preparing, .opened, .cancelled: false
         }
     }
 }
@@ -478,6 +479,7 @@ struct IslandView: View {
                 .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
         }
         .buttonStyle(.plain)
+        .disabled(model.environmentGuard.isDesignPreview)
         .help(language.text("设置", "Settings"))
         .accessibilityLabel(language.text("设置", "Settings"))
         .accessibilityHint(language.text(
@@ -533,9 +535,21 @@ struct IslandView: View {
     private var contentWidth: CGFloat { model.expandedIslandWidth - expandedInset * 2 }
 
     private var dropDown: some View {
-        singlePage
-            .frame(width: contentWidth, height: dropHeight - 15, alignment: .top)
-            .padding(.horizontal, expandedInset).padding(.top, 6).padding(.bottom, 9)
+        VStack(spacing: 8) {
+            singlePage
+            if model.environmentGuard.hasNetworkWarning {
+                NetworkWarningView(service: model.environmentGuard, language: language, animate: expanded,
+                    measuredHeight: { height in
+                        let measured = ceil(height)
+                        if abs(model.networkWarningHeight - measured) > 0.5 {
+                            model.networkWarningHeight = measured
+                        }
+                    }, detailsVisibilityChanged: { presentation.networkDetailsVisible = $0 })
+            }
+        }
+        .frame(width: contentWidth, alignment: .top)
+        .padding(.horizontal, expandedInset).padding(.top, 6).padding(.bottom, 9)
+        .animation(.easeInOut(duration: 0.25), value: model.expandedDropHeight)
     }
 
     @ViewBuilder private var singlePage: some View {

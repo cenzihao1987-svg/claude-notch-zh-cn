@@ -27,18 +27,15 @@ actor HandoffCoordinator {
 
         switch destination {
         case .claudeDesktop:
-            let opened = await Self.openClaude(cwd: task.cwd, instruction: prepared.instruction)
-            if opened {
-                return .opened(destination: .claudeDesktop, packetPath: prepared.packetPath,
-                               instruction: prepared.instruction)
-            }
-            await MainActor.run {
-                Self.copyToPasteboard(prepared.instruction)
-            }
-            await Self.openClaudeDesktop()
-            return .fallback(destination: .claudeDesktop, packetPath: prepared.packetPath,
-                             instruction: prepared.instruction,
-                             reason: "Claude 桌面端深链未打开，交接指令已复制")
+            return await Self.deliverClaude(packetPath: prepared.packetPath, instruction: prepared.instruction,
+                authorize: { await EnvironmentGuardService.shared.prepareForHandoff() },
+                failure: { EnvironmentGuardService.shared.operationFailed ? EnvironmentGuardService.shared.operationMessage?.text(.chinese) ?? "Claude 启动未完成" : nil },
+                open: { Self.openClaude(cwd: task.cwd, instruction: prepared.instruction) },
+                fallback: {
+                    guard await Self.openClaudeDesktop() else { return false }
+                    Self.copyToPasteboard(prepared.instruction)
+                    return true
+                })
 
         case .codex:
             let launch = await withCheckedContinuation { continuation in
@@ -204,21 +201,37 @@ actor HandoffCoordinator {
         return url.path
     }
 
-    @MainActor private static func openClaude(cwd: String, instruction: String) async -> Bool {
+    /// Authorization rejection is terminal, not a deep-link failure eligible for fallback.
+    @MainActor static func deliverClaude(packetPath: String, instruction: String,
+        authorize: @MainActor () async -> Bool, failure: @MainActor () -> String?, open: @MainActor () -> Bool,
+        fallback: @MainActor () async -> Bool) async -> HandoffResult {
+        guard await authorize() else {
+            if let reason = failure() { return .failed(packetPath: packetPath, instruction: nil, reason: reason) }
+            return .cancelled
+        }
+        if open() { return .opened(destination: .claudeDesktop, packetPath: packetPath, instruction: instruction) }
+        guard await fallback() else {
+            if let reason = failure() { return .failed(packetPath: packetPath, instruction: nil, reason: reason) }
+            return .cancelled
+        }
+        return .fallback(destination: .claudeDesktop, packetPath: packetPath, instruction: instruction,
+                         reason: "Claude 桌面端深链未打开，交接指令已复制")
+    }
+
+    @MainActor private static func openClaude(cwd: String, instruction: String) -> Bool {
         guard NSWorkspace.shared.urlForApplication(
             withBundleIdentifier: "com.anthropic.claudefordesktop"
         ) != nil,
         let url = HandoffInstructionBuilder.claudeDesktopURL(
             cwd: cwd, instruction: instruction
         ) else { return false }
-        guard await EnvironmentGuardService.shared.prepareForHandoff() else { return false }
         return NSWorkspace.shared.open(url)
     }
 
-    @MainActor private static func openClaudeDesktop() async {
+    @MainActor private static func openClaudeDesktop() async -> Bool {
         // This path also respects a configured cold launch; it never bypasses a failed profile.
-        if !GuardLauncher.runningApplications.isEmpty { return }
-        await EnvironmentGuardService.shared.launchClaude()
+        if !GuardLauncher.runningApplications.isEmpty { return true }
+        return await EnvironmentGuardService.shared.launchClaude()
     }
 
     @MainActor private static func openCodex(threadID: String) -> Bool {

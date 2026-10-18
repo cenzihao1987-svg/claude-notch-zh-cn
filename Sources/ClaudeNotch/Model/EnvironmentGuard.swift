@@ -92,10 +92,12 @@ struct GuardRiskAssessment: Equatable, Sendable {
     let local: Int?
     let network: Int?
     let client: Int?
+    var minimumTotal = 0
 
     var total: Int? {
+        if minimumTotal > 0 { return min(100, max(minimumTotal, (local ?? 0) + (network ?? 0) + (client ?? 0))) }
         guard let local, let network, let client else { return nil }
-        return local + network + client
+        return min(100, max(minimumTotal, local + network + client))
     }
 
     func level(_ language: AppLanguage) -> String {
@@ -116,18 +118,30 @@ enum GuardRiskEvaluator {
     ]
 
     static func assess(environment: GuardSystemEnvironment?, snapshot: GuardSnapshot,
-                       networkEnabled: Bool, now: Date = .now) -> GuardRiskAssessment {
+                       networkEnabled: Bool, now: Date = .now, estimating: Bool = false) -> GuardRiskAssessment {
         let local: Int?
         if let environment, !environment.localeIdentifier.isEmpty,
            let region = Locale(identifier: environment.localeIdentifier).region?.identifier,
            Locale.Region.isoRegions.contains(where: { $0.identifier == region }),
            TimeZone(identifier: environment.timeZoneIdentifier) != nil {
-            local = region == "CN" || mainlandTimeZones.contains(environment.timeZoneIdentifier) ? 40 : 0
+            var points = region == "CN" || mainlandTimeZones.contains(environment.timeZoneIdentifier) ? 40 : 0
+            if snapshot.networkIsFresh(at: now), let route = snapshot.network {
+                if route.countryCode != region { points = max(points, 20) }
+                if let zone = route.timeZone, TimeZone(identifier: zone) != nil,
+                   !GuardWebEvaluator.timezoneMatches(environment.timeZoneIdentifier, zone) { points = max(points, 20) }
+            }
+            if !estimating, case .observed(let report) = snapshot.webEnvironment,
+               report.frames.contains(where: { !GuardWebEvaluator.localeMatches($0.locale, environment.localeIdentifier)
+                    || !GuardWebEvaluator.languageMatches($0.language, environment.languageCode)
+                    || !GuardWebEvaluator.timezoneMatches($0.timeZone, environment.timeZoneIdentifier) }) { points = max(points, 20) }
+            local = points
         } else { local = nil }
         let network: Int?
         if networkEnabled, snapshot.networkIsFresh(at: now), let country = snapshot.network?.countryCode,
            Locale.Region.isoRegions.contains(where: { $0.identifier == country }) {
-            network = GuardSupportedRegions.codes.contains(country) ? 0 : 40
+            network = snapshot.networkBehavior.locationUnverified ? nil : min(40,
+                max(GuardSupportedRegions.codes.contains(country) ? 0 : 40, snapshot.networkBehavior.points)
+                    + snapshot.proxyCheck.points + (snapshot.historyUnavailable ? 10 : 0))
         } else { network = nil }
         let client: Int?
         switch snapshot.client?.signature {
@@ -136,7 +150,8 @@ enum GuardRiskEvaluator {
         case .invalid?: client = 20
         default: client = nil
         }
-        return .init(local: local, network: network, client: client)
+        return .init(local: local, network: network, client: client.map { min(20, $0 + snapshot.runtimeCheck.points) },
+                     minimumTotal: snapshot.networkBehavior.minimumTotal)
     }
 }
 
@@ -187,10 +202,15 @@ struct GuardNetworkObservation: Equatable, Sendable {
     let fetchedAt: Date
     var city: String? = nil
     var subdivision: String? = nil
+    var ip: String? = nil
+    var timeZone: String? = nil
 }
 
-/// Decode only the geographic labels used in the panel, never the IP in the response.
+/// Explicitly authorized local exit history; no coordinates or account fields are decoded.
 struct GuardCountryResponse: Decodable, Sendable {
+    let ip: String?
+    let location: Location?
+    struct Location: Decodable, Sendable { let time_zone: String? }
     let country: String
     let city: String?
     let subdivision: String?
@@ -203,10 +223,16 @@ struct GuardSnapshot: Sendable {
     var networkInvalidated = true
     var networkError: GuardText?
     var webEnvironment: GuardWebState = .unavailable(.notRunning)
+    var proxyCheck = GuardProxyCheck()
+    var runtimeCheck = GuardRuntimeCheck()
+    var exitChange: GuardExitChange?
+    var networkBehavior = GuardNetworkBehavior()
+    var desktopActivity = GuardDesktopActivity.unknown
+    var historyUnavailable = false
 
     func networkIsFresh(at date: Date) -> Bool {
         guard !networkInvalidated, let network else { return false }
-        return (0..<900).contains(date.timeIntervalSince(network.fetchedAt))
+        return (0..<180).contains(date.timeIntervalSince(network.fetchedAt))
     }
 }
 

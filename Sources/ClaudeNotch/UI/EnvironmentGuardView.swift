@@ -149,6 +149,11 @@ struct EnvironmentGuardView: View {
             }.buttonStyle(.plain).accessibilityLabel(language.text("评分规则", "Scoring rules"))
                 .popover(isPresented: $showRules) { rules }
             Spacer()
+            Button { NetworkHistoryWindow.present(service: service, language: language) } label: {
+                GuardIcon(.clock, size: 16).foregroundStyle(GuardVisual.secondary).frame(width: 26, height: 26)
+            }.buttonStyle(.plain)
+                .help(language.text("历史日志", "History log"))
+                .accessibilityLabel(language.text("历史日志", "History log"))
             if service.isDesignPreview {
                 Text(language.text("示例数据", "Example data")).font(.system(size: 10)).foregroundStyle(GuardVisual.secondary)
                     .padding(.horizontal, 8).padding(.vertical, 5).background(GuardVisual.field, in: RoundedRectangle(cornerRadius: 7))
@@ -265,6 +270,15 @@ struct EnvironmentGuardView: View {
                 }.font(.system(size: 10)).foregroundStyle(webColor).help(webFinding.detail.text(language))
             }.frame(height: 32)
             breakdown(service.configuredRisk, configured: true).font(.system(size: 11.5)).padding(.top, 8)
+            HStack(spacing: 8) {
+                Text(service.followingIP ? language.text("地区与时区跟随 IP", "Region and timezone follow IP")
+                     : language.text("本次手动配置 · 下次启动重新跟随 IP", "Manual for this run · follows IP next launch"))
+                    .font(.system(size: 10)).foregroundStyle(GuardVisual.secondary)
+                if !service.followingIP {
+                    Button(language.text("恢复跟随", "Follow IP")) { service.restoreIPFollowing() }
+                        .buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(GuardVisual.clay)
+                }
+            }
             comparison.padding(.top, 19)
             HStack(spacing: 10) {
                 Text(webReadingSummary).foregroundStyle(webColor).contentTransition(.opacity).animation(resultAnimation, value: service.isRechecking)
@@ -387,9 +401,10 @@ struct EnvironmentGuardView: View {
     private func breakdown(_ risk: GuardRiskAssessment, configured: Bool) -> some View {
         let local = service.isRechecking ? "—" : risk.local.map(String.init) ?? "—"
         let client = service.isRechecking ? "—" : risk.client.map(String.init) ?? "—"
-        let value = language.text("本地特征 \(local)  ·  IP 所在地：\(networkLocation)  ·  客户端来源 \(client)",
-                                  "Local \(local)  ·  IP location: \(networkLocation)  ·  Client source \(client)")
-        return Text(!service.isRechecking && risk.network == 40 ? value + language.text("  ·  网络 40", "  ·  Network 40") : value)
+        let value = language.text("本地特征 \(local)  ·  IP 所在地：\(networkLocation)  ·  客户端/执行 \(client)",
+                                  "Local \(local)  ·  IP location: \(networkLocation)  ·  Client/runtime \(client)")
+        return Text(!service.isRechecking && (risk.network ?? 0) > 0
+                    ? value + language.text("  ·  网络 \(risk.network ?? 0)", "  ·  Network \(risk.network ?? 0)") : value)
             .foregroundStyle(GuardVisual.secondary)
             .contentTransition(.opacity).animation(resultAnimation, value: service.isRechecking)
             .lineLimit(1).minimumScaleFactor(0.8).frame(height: 19, alignment: .leading).help(value)
@@ -456,11 +471,13 @@ struct EnvironmentGuardView: View {
     private var rules: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(language.text("评分规则", "Scoring rules")).font(.system(size: 15, weight: .semibold))
-            Text(language.text("本地环境特征：最高 40 分\n地区为中国大陆或使用中国大陆时区时计 40 分，不重复累计；中文语言本身不计分。\n\n网络出口参照：最高 40 分\n探测国家不在已核对的支持地区列表中计 40 分，地区不一致只作提醒。\n\n客户端校验：最高 20 分\n有效签名 0 分；本地重签名 10 分；签名或资源校验失败 20 分。\n\n0–19：风险较低；20–49：风险中等；50–79：风险较高；80–100：风险很高。缺失必要检测数据时不计算总分。", "Local environment: up to 40. Mainland China region or timezone adds 40 once; Chinese language alone adds none.\n\nNetwork reference: up to 40 for a country outside the checked supported-region list.\n\nClient: valid signature 0; local signature 10; failed validation 20.\n\n0–19 lower, 20–49 moderate, 50–79 higher, 80–100 very high. Missing required data leaves the total unavailable."))
+            Text(language.text("本地环境：最高 40 分\n大陆地区/时区 40；与 IP 国家或时区不一致 20；网页实测不一致 20，关联项不重复累加。中文语言本身不计分。\n\n网络：最高 40 分\n同国 IP／城市变化 0；普通跨区 10；24 小时跨区至少 4 次 20；已核验异常跨区 30，连续／往返 40。非支持地区 40；代理冲突 15、待核验定义 5，历史不可用 10。\n\n客户端／执行链路：最高 20 分\n原签名／本地签名／异常签名 0／10／20；运行中执行链路未核验加 5。\n\n仅累计 Claude 或可信执行进程运行期间观测到的跨区；未运行期间只记录，不新增累计。旧记录缺少运行状态时不作为已确认累计。\n\n运行期出口在 2 小时内切换到远隔区域，5 秒复测且第二定位来源一致后，风险至少 50；1 小时至少两次异常切换或往返，风险至少 80。稳定有效观察 2 小时解除 80 下限，24 小时解除 50 下限。忽略不清分。\n\n0–19 较低；20–49 中等；50–79 较高；80–100 极高。必要数据缺失且没有已确认异常时显示未知。",
+                               "Local: up to 40. Mainland region/timezone 40; IP country/timezone or observed page mismatch 20, deduplicated. Chinese language alone adds none.\n\nNetwork: up to 40. Same-country IP/city changes 0; ordinary region change 10; 4 changes in 24h 20; verified remote anomaly 30; repeated/return switches 40. Unsupported region 40; proxy conflict 15, definitions 5, history unavailable 10.\n\nClient/runtime: up to 20. Valid/local/invalid signature 0/10/20; unverified running execution adds 5.\n\nOnly exits observed during Claude or trusted execution contribute to region counts. Inactive changes stay in the log without new counts; legacy records without activity evidence are excluded from confirmed counts.\n\nExposed remote switches within 2h need a repeated sample after 5s and agreement from a second location source: minimum 50. Two anomalies/round trips in 1h: minimum 80. Verified stability reduces floors after 2h/24h; ignoring retains risk.\n\nMissing data without a verified anomaly leaves the total unavailable."))
                 .font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
         }.padding(18).frame(width: 350)
     }
     private var verificationDetails: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 14) {
             ForEach(service.verificationFindings) { item in
                 VStack(alignment: .leading, spacing: 5) {
@@ -468,10 +485,17 @@ struct EnvironmentGuardView: View {
                     Text(item.detail.text(language)).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Toggle(language.text("只读检测出口国家", "Read-only route-country checks"), isOn: Binding(get: { service.networkChecksEnabled }, set: { enabled in service.setNetworkChecksEnabled(enabled) }))
+            HStack {
+                Button(language.text("历史日志", "History log")) { NetworkHistoryWindow.present(service: service, language: language) }
+                if service.exitAlert != nil {
+                    Button(language.text("确认新出口", "Confirm exit")) { service.confirmNewExit() }.disabled(!service.canConfirmNewExit)
+                }
+            }
+            Toggle(language.text("只读检测出口 IP 与地区", "Read-only exit IP and region checks"), isOn: Binding(get: { service.networkChecksEnabled }, set: { enabled in service.setNetworkChecksEnabled(enabled) }))
                 .toggleStyle(.switch).controlSize(.small)
             Button(language.text("选择 Claude 安装位置…", "Choose Claude app…")) { service.selectApplication() }
-        }.padding(18).frame(width: 360)
+        }.padding(18)
+        }.frame(width: 430, height: 560)
     }
 
     private var checkAge: String {
@@ -516,9 +540,9 @@ struct EnvironmentGuardView: View {
             alert.addButton(withTitle: language.text("取消", "Cancel"))
             alert.buttons.last?.keyEquivalent = "\u{1b}"
             guard alert.runModal() == .alertFirstButtonReturn else { return }
-            Task { if !(await service.restartWithProfile()) { showFailure() } }
+            Task { if !(await service.restartWithProfile()), service.operationFailed { showFailure() } }
         } else {
-            Task { if !(await service.launchClaude()) { showFailure() } }
+            Task { if !(await service.launchClaude()), service.operationFailed { showFailure() } }
         }
     }
     private func setProfileEnabled(_ enabled: Bool) {
@@ -533,7 +557,7 @@ struct EnvironmentGuardView: View {
         alert.buttons.last?.keyEquivalent = "\u{1b}"
         if alert.runModal() == .alertFirstButtonReturn {
             guard !service.isDesignPreview else { return }
-            Task { if !(await service.restartWithoutProfile()) { showFailure() } }
+            Task { if !(await service.restartWithoutProfile()), service.operationFailed { showFailure() } }
         }
     }
     private func showFailure() {

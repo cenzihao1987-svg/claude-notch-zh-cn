@@ -6,15 +6,27 @@
 
 Track quota and balances for Claude, Codex, WorkBuddy and DeepSeek, with usage trends and reset times.
 
-New in v1.1.0: configure Claude’s language, region and timezone independently, then compare them with observed web values.
+New in v1.1.2: exit-IP warnings and a network check before launching, restarting or handing a task to Claude.
 
 [![Release](https://img.shields.io/github/v/release/cenzihao1987-svg/claude-notch-zh-cn?color=CC785C&label=version)](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases/latest)
 &nbsp; ![macOS 14+](https://img.shields.io/badge/macOS-14+-111111?logo=apple&logoColor=white)
 &nbsp; [![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[中文](README.md) · [Source releases](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases) · [v1.1.0 overview](RELEASE_NOTES_v1.1.0.md)
+[中文](README.md) · [Source releases](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/releases) · [v1.1.2 overview](RELEASE_NOTES_v1.1.2.md)
 
 </div>
+
+## Network warnings in the expanded notch · v1.1.2
+
+![Full expanded Claude Notch dashboard with network warning tips; all values are demonstration data](docs/media/claude-notch-v1.1.2-network-warning.png)
+
+The warning sits below quota, the weekly chart and recent tasks. The network-tool icon is to the left of history; the only action buttons are Ignore and Close. Quota values, task names and IP addresses in this image are synthetic.
+
+- Detect exit-IP changes, including same-country changes, with a five-second repeat sample and separate IPv4/IPv6 baselines.
+- Read Clash Verge’s live core mode; warn when it is not global, not running or cannot be verified.
+- Check before launching, restarting or handing a task to Claude. Cancellation stops the remaining actions.
+- Recheck every 30 seconds while Claude runs and on network or application events. Show notch warnings and macOS notifications; open the current VPN client from the network icon.
+- Keep local route history separate from risk scoring: same-country IP changes do not add geographic risk points, and dismissing a warning does not erase risk history.
 
 ## Quota and environment status at a glance
 

@@ -14,7 +14,15 @@ struct Main {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let model = AppModel()
+    let model: AppModel = {
+        #if DEBUG
+        if GuardNotchDemo.isRequested { return GuardNotchDemo.makeModel() }
+        #endif
+        return AppModel()
+    }()
+    #if DEBUG
+    private var guardDemo: GuardNotchDemo?
+    #endif
     let monitor = AppMonitor()
     private var windows: [CGDirectDisplayID: IslandWindow] = [:]
     private var clickMonitor: Any?
@@ -23,6 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         #if DEBUG
+        if GuardNotchDemo.isRequested, let screen = NSScreen.island {
+            guardDemo = GuardNotchDemo(model: model, screen: screen)
+            return
+        }
         // An isolated native-window check, without quota refreshes or a second notch overlay.
         if ProcessInfo.processInfo.arguments.contains("--guard-window-preview")
             || ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_WINDOW_PREVIEW"] == "1" {
@@ -82,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           self?.model.selectProvider(provider, persist: false)
                       })
         sync()
+        observeGuardNetworkWarnings()
         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.windows.values.forEach { $0.updateHoverExpansion() } }
         }
@@ -227,6 +240,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateVisibility()
     }
 
+    private func observeGuardNetworkWarnings() {
+        withObservationTracking { _ = model.environmentGuard.networkNoticeGeneration } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.model.environmentGuard.hasNetworkWarning {
+                    let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
+                    if let id = screen?.displayID { self.windows[id]?.presentNetworkWarning() }
+                }
+                self.observeGuardNetworkWarnings()
+            }
+        }
+    }
+
     private func updateAggregatedExpansion() {
         model.isExpanded = windows.values.contains(where: \.isExpanded)
         updateClickMonitor()
@@ -234,6 +260,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         model.environmentGuard.stop()
+        #if DEBUG
+        guardDemo?.restoreProductionNotch()
+        #endif
     }
 
     #if DEBUG
