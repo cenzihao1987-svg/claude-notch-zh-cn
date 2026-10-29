@@ -101,9 +101,12 @@ enum GuardClashReader {
         return data
     }
 
-    @MainActor static func open() {
-        guard let url = bundleIDs.compactMap({ NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }).first else { return }
+    /// Returns false when Clash Verge is not installed.
+    @discardableResult
+    @MainActor static func open() -> Bool {
+        guard let url = bundleIDs.compactMap({ NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }).first else { return false }
         NSWorkspace.shared.open(url)
+        return true
     }
 }
 

@@ -138,6 +138,34 @@
       "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
       "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/refresh-cw.svg",
       "iconfontID": 47658845
+    },
+    {
+      "name": "x",
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/x.svg",
+      "iconfontID": null,
+      "added": "2026-10-29"
+    },
+    {
+      "name": "circle-check",
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/circle-check.svg",
+      "iconfontID": null,
+      "added": "2026-10-29"
+    },
+    {
+      "name": "loader-circle",
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/loader-circle.svg",
+      "iconfontID": null,
+      "added": "2026-10-29"
+    },
+    {
+      "name": "arrow-up-right",
+      "iconfontCollection": "https://www.iconfont.cn/collections/detail?cid=54062",
+      "source": "https://raw.githubusercontent.com/lucide-icons/lucide/6bc1373b3f3075fbcfea542ea5530fdbd6cb99b2/icons/arrow-up-right.svg",
+      "iconfontID": null,
+      "added": "2026-10-29"
     }
   ]
 }

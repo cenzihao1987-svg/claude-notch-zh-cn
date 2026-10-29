@@ -12,10 +12,20 @@ final class AppModel {
     }
 
     var environmentGuardVisible: Bool { selectedProvider == .claude }
+    /// The first-run welcome card replaces the Claude page until it is answered.
+    var showsWelcome: Bool { environmentGuardVisible && environmentGuard.showsWelcome }
+    /// Extra width taken by the "unprotected" label beside the shield.
+    var unprotectedBadgeExtraWidth: CGFloat { language == .chinese ? 26 : 52 }
+    func showsUnprotectedBadge(expanded: Bool) -> Bool {
+        environmentGuardVisible && (environmentGuard.protectionState.isUnprotectedRun || (expanded && environmentGuard.showsWelcome))
+    }
+    private var collapsedBadgeExtra: CGFloat { showsUnprotectedBadge(expanded: false) ? unprotectedBadgeExtraWidth : 0 }
+    /// Width of the collapsed shield control; the window's hover exclusion uses the same value.
+    var collapsedGuardBadgeWidth: CGFloat { 40 + collapsedBadgeExtra }
     var collapsedWingWidth: CGFloat { 56 }
-    var collapsedIslandOffset: CGFloat { environmentGuardVisible ? 28 : 0 }
-    var collapsedUsageWidth: CGFloat { environmentGuardVisible ? 112 : 56 }
-    func collapsedIslandWidth(notchWidth: CGFloat) -> CGFloat { notchWidth + 56 * 2 + 24 + (environmentGuardVisible ? 56 : 0) }
+    var collapsedIslandOffset: CGFloat { environmentGuardVisible ? 28 + collapsedBadgeExtra / 2 : 0 }
+    var collapsedUsageWidth: CGFloat { environmentGuardVisible ? 112 + collapsedBadgeExtra : 56 }
+    func collapsedIslandWidth(notchWidth: CGFloat) -> CGFloat { notchWidth + 56 * 2 + 24 + (environmentGuardVisible ? 56 + collapsedBadgeExtra : 0) }
     func collapsedInteractionWidth(notchWidth: CGFloat) -> CGFloat { collapsedIslandWidth(notchWidth: notchWidth) + 24 }
     /// 刷新节奏的可观测性。查看：
     /// `/usr/bin/log show --last 10m --predicate 'subsystem == "com.claudenotch.app"'`
@@ -162,12 +172,25 @@ final class AppModel {
         case .deepseek:
             deepSeekIsStale || deepSeekSnapshot.isStale(after: Self.deepSeekCollapsedInterval)
         case .codex:
-            codexIsStale || codexSnapshot.isStale(after: Self.claudeUsageFreshAfter)
+            codexIsStale || codexSnapshot.isStale(after: Self.codexUsageFreshAfter)
         case .claude:
             activeProviderSnapshot.isStale(after: Self.claudeUsageFreshAfter)
+                || (limits?.sessionResetsAt.map { $0 <= Date() } ?? false)
         }
     }
-    nonisolated static let claudeUsageFreshAfter: TimeInterval = 150
+    nonisolated static let claudeUsageFreshAfter: TimeInterval = 15 * 60
+    nonisolated static let codexUsageFreshAfter: TimeInterval = 150
+
+    nonisolated static func claudeUsageStatus(fetchedAt: Date?, resetAt: Date?, waiting: Bool,
+                                             language: AppLanguage, now: Date = Date()) -> String? {
+        guard let fetchedAt else { return waiting ? language.text("等待 Claude 客户端更新…", "Waiting for Claude to update…") : nil }
+        let age = max(0, now.timeIntervalSince(fetchedAt))
+        let resetPassed = resetAt.map { $0 <= now } ?? false
+        guard waiting || age > claudeUsageFreshAfter || resetPassed else { return nil }
+        let updated = age < 60 ? language.text("刚刚更新", "Updated just now")
+            : language.text("\(Int(age / 60)) 分钟前更新", "Updated \(Int(age / 60)) min ago")
+        return resetPassed ? language.text("上次读数 · ", "Last reading · ") + updated : updated
+    }
 
     static func shouldWaitForClaudeDesktopUsage(
         hasCachedUsage: Bool,
@@ -324,9 +347,8 @@ final class AppModel {
             planName: claudeSubscriptionTier == .pro ? "Claude Pro" : planName,
             source: claudeUsageSource,
             fetchedAt: limits?.fetchedAt ?? statuslineFetchedAt,
-            statusMessage: claudeWaitingForDesktopUsage
-                ? language.text("等待 Claude 客户端更新…", "Waiting for Claude to update…")
-                : nil
+            statusMessage: Self.claudeUsageStatus(fetchedAt: limits?.fetchedAt ?? statuslineFetchedAt,
+                resetAt: sessionResetsAt, waiting: claudeWaitingForDesktopUsage, language: language)
         )
     }
 
@@ -743,24 +765,17 @@ final class AppModel {
                 self.claudeSubscriptionTier = tier
             }
 
-            // Claude Desktop 已经请求并缓存的官方响应优先。150 秒内视为新鲜：不再重复请求
-            // 同一个接口，也不触碰 token/Cookie/Keychain。仍在当前额度周期内的旧值继续显示并
-            // 标为 stale；若已开启凭据兜底，则继续进入受节流与退避保护的网络源。
-            if let cached = await desktopUsageCache.latest() {
-                if let reset = cached.sessionResetsAt, reset <= Date() {
-                    self.discardExpiredDesktopCachedUsage()
-                } else {
-                    self.applyDesktopCachedUsage(cached)
-                    let isFresh = cached.isFresh(after: Self.claudeUsageFreshAfter)
-                    self.claudeWaitingForDesktopUsage = Self.shouldWaitForClaudeDesktopUsage(
-                        hasCachedUsage: true,
-                        cacheIsFresh: isFresh,
-                        credentialFallbackEnabled: self.claudeCredentialFallbackEnabled
-                    )
-                    if isFresh {
-                        self.claudeFailures = 0
-                        return
-                    }
+            // Read only cached official responses. Keep old observations with their timestamp
+            // instead of clearing quota at a reset boundary; never guess the post-reset value.
+            if let cached = await desktopUsageCache.latest(force: force) {
+                self.applyDesktopCachedUsage(cached)
+                let current = self.limits
+                let isFresh = Date().timeIntervalSince(current?.fetchedAt ?? cached.fetchedAt) <= Self.claudeUsageFreshAfter
+                    && (current?.sessionResetsAt.map { $0 > Date() } ?? true)
+                self.claudeWaitingForDesktopUsage = !isFresh
+                if isFresh {
+                    self.claudeFailures = 0
+                    return
                 }
             }
 
@@ -813,12 +828,6 @@ final class AppModel {
             source: "Claude Desktop cache",
             fetchedAt: cached.fetchedAt
         ))
-    }
-
-    private func discardExpiredDesktopCachedUsage() {
-        guard limits?.source == "Claude Desktop cache" else { return }
-        limits = nil
-        pctHistory.removeAll()
     }
 
     func fetchCodexUsage(includeWhenInactive: Bool = false) {
@@ -983,10 +992,13 @@ final class AppModel {
     }
 
     var networkWarningHeight: CGFloat = 90
+    var welcomeHeight: CGFloat = 270
 
     /// Read by both the view and the window's click-zone.
     var expandedDropHeight: CGFloat {
-        let warningHeight: CGFloat = environmentGuard.hasNetworkWarning ? networkWarningHeight + 8 : 0
+        let warningHeight: CGFloat = environmentGuard.hasRiskBanner ? networkWarningHeight + 8 : 0
+        // Welcome card plus the drop-down's 6 pt top and 9 pt bottom padding.
+        if showsWelcome { return welcomeHeight + 15 + warningHeight }
         guard selectedProvider != .deepseek else { return 260 + warningHeight }
         let snapshot = activeProviderSnapshot
         return warningHeight + Self.expandedDropHeight(
@@ -1037,6 +1049,12 @@ final class AppModel {
         if let oauth = root["oauthAccount"] as? [String: Any],
            let tier = oauth["organizationRateLimitTier"] as? String {
             planName = Fmt.planLabel(tier)
+        }
+        // Desktop 缓存已读不到组织资料（2026-10-29），先用 Claude Code 登录账户的组织类型；
+        // fetchLimits 之后若从 Desktop 缓存读到，会覆盖这里的值。
+        if let oauth = root["oauthAccount"] as? [String: Any],
+           let type = oauth["organizationType"] as? String {
+            claudeSubscriptionTier = ClaudeSubscriptionTier(organizationType: type)
         }
     }
 }

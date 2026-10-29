@@ -2,7 +2,11 @@ import Foundation
 
 /// Aggregates parsed events from every log file into a render-ready snapshot.
 final class UsageStore {
-    private var eventsByFile: [URL: [UsageEvent]] = [:]
+    private var eventsByFile: [URL: [UsageEvent]] = [:] {
+        didSet { sortedEvents = nil }
+    }
+    /// allEvents() 的结果。每 5 秒一次的刷新大多没有新事件，不必每次把两天的事件重新拼接、排序、去重。
+    private var sortedEvents: [UsageEvent]?
 
     func ingest(fileURL: URL) throws {
         eventsByFile[fileURL] = try LogParser.parse(fileURL: fileURL)
@@ -23,12 +27,14 @@ final class UsageStore {
     func remove(fileURL: URL) { eventsByFile[fileURL] = nil }
 
     private func allEvents() -> [UsageEvent] {
+        if let sortedEvents { return sortedEvents }
         var seen = Set<String>()
         var out: [UsageEvent] = []
         for e in eventsByFile.values.flatMap({ $0 })
             .sorted(by: { $0.timestamp < $1.timestamp }) {
             if seen.insert(e.dedupeKey).inserted { out.append(e) }
         }
+        sortedEvents = out
         return out
     }
 

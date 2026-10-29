@@ -71,4 +71,26 @@ import Foundation
 
         #expect(store.snapshot(now: now).recentProjects.map(\.id) == ["fresh"])
     }
+
+    /// 2026-10-29：快照复用排好序的事件。追加、替换、移除之后必须重算，不能拿旧结果。
+    @Test func cachedEventsRefreshAfterEveryChange() {
+        let store = UsageStore()
+        let now = ISO8601DateFormatter().date(from: "2026-08-21T12:00:00Z")!
+        let file = URL(fileURLWithPath: "/tmp/a.jsonl")
+        func event(_ id: String, tokens: Int) -> UsageEvent {
+            UsageEvent(timestamp: now.addingTimeInterval(-60), sessionId: "s1", requestId: id,
+                       messageId: id, model: "claude-sonnet-4-5", cwd: "/tmp/project",
+                       inputTokens: tokens, outputTokens: 0,
+                       cacheCreationTokens: 0, cacheReadTokens: 0)
+        }
+
+        store.ingest(fileURL: file, events: [event("m1", tokens: 100)])
+        #expect(store.snapshot(now: now).weeklyTokens == 100)
+        store.append(fileURL: file, events: [event("m2", tokens: 50)])
+        #expect(store.snapshot(now: now).weeklyTokens == 150)
+        store.ingest(fileURL: file, events: [event("m3", tokens: 7)])
+        #expect(store.snapshot(now: now).weeklyTokens == 7)
+        store.remove(fileURL: file)
+        #expect(store.snapshot(now: now).isEmpty)
+    }
 }

@@ -3,6 +3,14 @@ import Foundation
 enum ClaudeSubscriptionTier: Equatable, Sendable {
     case pro
     case max
+
+    /// Claude Code 写在 `~/.claude.json` 的 `oauthAccount.organizationType`（如 `claude_pro`）。
+    /// 2026-10-29 起 Desktop 缓存里已没有组织资料条目，用它兜底；团队、企业等其它类型不归类。
+    init?(organizationType: String) {
+        if organizationType.hasPrefix("claude_max") { self = .max }
+        else if organizationType == "claude_pro" { self = .pro }
+        else { return nil }
+    }
 }
 
 /// A usage snapshot Claude Desktop has already fetched from claude.ai and written to its
@@ -25,6 +33,12 @@ struct ClaudeDesktopCachedUsage: Equatable, Sendable {
 /// network provider instead of breaking the app.
 actor ClaudeDesktopUsageCache {
     private static let maxEntryBytes = 1_048_576
+    /// 订阅等级查找只看最近修改的这么多个缓存文件。全量扫描要逐个打开近 3 万个文件
+    /// （2026-10-29 实测每次约 1.2 秒 CPU、冷缓存读盘约 270 MB），条目不存在时每次都白扫一遍。
+    static let maxCandidates = 256
+    /// 订阅等级几乎不变，不必每次刷新额度都去翻缓存。
+    static let subscriptionCheckInterval: TimeInterval = 600
+    static let usageScanInterval: TimeInterval = 30
     private static let entryPrefix = "1/0/https://claude.ai/api/organizations/"
     private static let entrySuffix = "/usage"
     private static let zstdMagic = Data([0x28, 0xB5, 0x2F, 0xFD])
@@ -33,9 +47,13 @@ actor ClaudeDesktopUsageCache {
     private var entryURL: URL?
     private var entryMTime: Date?
     private var cachedUsage: ClaudeDesktopCachedUsage?
+    /// 用量条目已扫描到的最新修改时间；之后只看比它新的缓存文件。
+    private var usageScannedThrough: Date?
+    private var usageCheckedAt: Date?
     private var subscriptionEntryURL: URL?
     private var subscriptionEntryMTime: Date?
     private var cachedSubscriptionTier: ClaudeSubscriptionTier?
+    private var subscriptionCheckedAt: Date?
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         directory = home.appendingPathComponent(
@@ -44,28 +62,38 @@ actor ClaudeDesktopUsageCache {
         )
     }
 
-    func latest() -> ClaudeDesktopCachedUsage? {
-        guard let candidate = findEntry() else { return nil }
-        let values = try? candidate.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-        guard let size = values?.fileSize, size > 24, size <= Self.maxEntryBytes,
-              let modified = values?.contentModificationDate
-        else { return nil }
-
-        if candidate == entryURL, modified == entryMTime { return cachedUsage }
-        guard let data = try? Data(contentsOf: candidate, options: .mappedIfSafe),
-              let json = decodeEntry(data, accepting: Self.isUsageKey),
-              let usage = Self.parseUsageJSON(json, fetchedAt: modified)
-        else { return nil }
-
-        entryURL = candidate
-        entryMTime = modified
-        cachedUsage = usage
-        return usage
+    /// 读法参考 `~/小米音箱改造/bridge/claude.py`（2026-10-29）：只看上次扫描之后新写入的缓存文件，
+    /// 新到旧取第一条用量响应；没有新的就沿用上一条——数值不会凭空消失，旧值好过一片空白。
+    func latest(now: Date = Date(), force: Bool = false) -> ClaudeDesktopCachedUsage? {
+        if !force, let checked = usageCheckedAt, (0..<Self.usageScanInterval).contains(now.timeIntervalSince(checked)) {
+            return cachedUsage
+        }
+        usageCheckedAt = now
+        guard let entries = usageEntries() else { return cachedUsage }
+        defer {
+            if let newest = entries.first?.1 { usageScannedThrough = max(usageScannedThrough ?? .distantPast, newest) }
+        }
+        for (candidate, modified) in entries {
+            if candidate == entryURL, modified == entryMTime { continue }
+            guard Self.isUsageEntry(candidate),
+                  let data = try? Data(contentsOf: candidate, options: .mappedIfSafe),
+                  let json = decodeEntry(data, accepting: Self.isUsageKey),
+                  let usage = Self.parseUsageJSON(json, fetchedAt: modified) else { continue }
+            if cachedUsage.map({ $0.fetchedAt > modified }) == true { continue }
+            entryURL = candidate; entryMTime = modified; cachedUsage = usage
+            break
+        }
+        return cachedUsage
     }
 
     /// Claude Desktop already caches the official organization profile used to render account
     /// features. Reading its capability names tells Pro from Max without another network request.
-    func subscriptionTier() -> ClaudeSubscriptionTier? {
+    func subscriptionTier(now: Date = Date()) -> ClaudeSubscriptionTier? {
+        if let checked = subscriptionCheckedAt,
+           now.timeIntervalSince(checked) < Self.subscriptionCheckInterval {
+            return cachedSubscriptionTier
+        }
+        subscriptionCheckedAt = now
         guard let candidate = findSubscriptionEntry() else { return cachedSubscriptionTier }
         let values = try? candidate.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
         guard let size = values?.fileSize, size > 24, size <= Self.maxEntryBytes,
@@ -103,7 +131,7 @@ actor ClaudeDesktopUsageCache {
         return decodeZstd(body)
     }
 
-    private func findEntry() -> URL? {
+    private func usageEntries() -> [(URL, Date)]? {
         let keys: Set<URLResourceKey> = [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: directory,
@@ -116,14 +144,12 @@ actor ClaudeDesktopUsageCache {
                   let values = try? url.resourceValues(forKeys: keys),
                   values.isRegularFile == true,
                   let size = values.fileSize, size > 24, size <= Self.maxEntryBytes,
-                  let modified = values.contentModificationDate
+                  let modified = values.contentModificationDate,
+                  usageScannedThrough.map({ modified >= $0 }) ?? true
             else { return nil }
             return (url, modified)
         }
         .sorted { $0.1 > $1.1 }
-        .lazy
-        .map(\.0)
-        .first(where: Self.isUsageEntry)
     }
 
     private func findSubscriptionEntry() -> URL? {
@@ -144,6 +170,7 @@ actor ClaudeDesktopUsageCache {
             return (url, modified)
         }
         .sorted { $0.1 > $1.1 }
+        .prefix(Self.maxCandidates)
         .lazy
         .map(\.0)
         .first { Self.isCacheEntry($0, accepting: Self.isOrganizationProfileKey) }
@@ -166,7 +193,7 @@ actor ClaudeDesktopUsageCache {
     }
 
     private static func isUsageKey(_ key: String) -> Bool {
-        key.hasPrefix(entryPrefix) && key.hasSuffix(entrySuffix)
+        key.hasPrefix(entryPrefix) && key.split(separator: "?", maxSplits: 1)[0].hasSuffix(entrySuffix)
     }
 
     private static func isOrganizationProfileKey(_ key: String) -> Bool {

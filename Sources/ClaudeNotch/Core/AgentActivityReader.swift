@@ -29,6 +29,8 @@ actor AgentActivityReader {
     private var codexURL: URL?
     private var lastDiscovery = Date.distantPast
     private let activeFreshness: TimeInterval = 10 * 60
+    /// 每个文件上次解析时的大小和结果。日志只追加，大小没变就不必每秒重读 128 KB、逐行解析 JSON。
+    private var parsedTails: [URL: (size: UInt64?, state: AgentActivityState)] = [:]
 
     func read() -> [UsageProviderID: AgentActivityState] {
         if Date().timeIntervalSince(lastDiscovery) >= 5 {
@@ -50,7 +52,14 @@ actor AgentActivityReader {
         parser: ([[String: Any]]) -> AgentActivityState
     ) -> AgentActivityState {
         guard let url else { return .idle }
-        let state = parser(tailObjects(url))
+        let size = Self.fileSize(url)
+        let state: AgentActivityState
+        if let parsed = parsedTails[url], parsed.size == size {
+            state = parsed.state
+        } else {
+            state = parser(tailObjects(url))
+            parsedTails[url] = (size, state)
+        }
         if state == .awaitingConfirmation { return state }
         guard Date().timeIntervalSince(Self.mtime(url)) <= activeFreshness else { return .idle }
         return state
@@ -223,6 +232,11 @@ actor AgentActivityReader {
         guard let url else { return .distantPast }
         return (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate ?? .distantPast
+    }
+
+    /// 每次现取（stat），不走 URL 的资源值缓存，免得拿到旧大小而漏掉新写入。
+    private static func fileSize(_ url: URL) -> UInt64? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
     }
 }
 

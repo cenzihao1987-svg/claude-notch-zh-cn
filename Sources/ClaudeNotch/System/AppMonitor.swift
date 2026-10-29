@@ -26,10 +26,15 @@ final class AppMonitor {
     var codexRunning = false
     var workBuddyRunning = false
 
-    private let claudeBundleIDs = ["com.anthropic.claudefordesktop", "com.anthropic.claude"]
-    /// ChatGPT.app 的真实 bundle id，实测确认——按常识猜 com.openai.chat 会猜错。
-    private let codexBundleIDs = ["com.openai.codex"]
-    private let workBuddyBundleIDs = ["com.workbuddy.workbuddy"]
+    /// Use the same exact identities for activation events and running-app detection.
+    nonisolated static func provider(forBundleID bundleID: String?) -> UsageProviderID? {
+        switch bundleID {
+        case "com.anthropic.claudefordesktop", "com.anthropic.claude": .claude
+        case "com.openai.codex": .codex
+        case "com.tencent.workbuddy.mac", "com.workbuddy.workbuddy": .workbuddy
+        default: nil
+        }
+    }
     private var onChange: (() -> Void)?
     private var onFrontmostProvider: ((UsageProviderID) -> Void)?
 
@@ -37,7 +42,6 @@ final class AppMonitor {
                onFrontmostProvider: @escaping (UsageProviderID) -> Void = { _ in }) {
         self.onChange = onChange
         self.onFrontmostProvider = onFrontmostProvider
-        updateRunningApps()
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification,
                      NSWorkspace.didTerminateApplicationNotification] {
@@ -56,28 +60,23 @@ final class AppMonitor {
             object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.onChange?() }
         }
+        updateRunningApps()
+        reportFrontmost(NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
     }
 
-    /// 前台切到 Claude 或 ChatGPT 时报告对应 provider；切到别的应用不报告，保持当前不变。
-    /// 与 updateClaude 同样只做精确匹配，不用 contains 那种模糊判断。
+    /// Follow supported agent apps; unrelated apps leave the current provider unchanged.
     private func reportFrontmost(_ bundleID: String?) {
-        guard let bundleID else { return }
-        if claudeBundleIDs.contains(bundleID) {
-            onFrontmostProvider?(.claude)
-        } else if codexBundleIDs.contains(bundleID) {
-            onFrontmostProvider?(.codex)
-        } else if workBuddyBundleIDs.contains(bundleID) {
-            onFrontmostProvider?(.workbuddy)
-        }
+        guard let provider = Self.provider(forBundleID: bundleID) else { return }
+        onFrontmostProvider?(provider)
     }
 
     private func updateRunningApps() {
         // Exact bundle-id match only — a loose contains("claude") would
         // false-positive on other apps (e.g. third-party usage trackers).
-        let runningIDs = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-        let claude = runningIDs.contains(where: claudeBundleIDs.contains)
-        let codex = runningIDs.contains(where: codexBundleIDs.contains)
-        let workBuddy = runningIDs.contains(where: workBuddyBundleIDs.contains)
+        let runningProviders = NSWorkspace.shared.runningApplications.compactMap { Self.provider(forBundleID: $0.bundleIdentifier) }
+        let claude = runningProviders.contains(.claude)
+        let codex = runningProviders.contains(.codex)
+        let workBuddy = runningProviders.contains(.workbuddy)
         if claude != claudeRunning || codex != codexRunning || workBuddy != workBuddyRunning {
             claudeRunning = claude
             codexRunning = codex

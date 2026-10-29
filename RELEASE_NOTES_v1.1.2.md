@@ -21,8 +21,16 @@ Claude、Codex、WorkBuddy、DeepSeek 的额度与余额监测、图表和近期
 
 从 Dock 等外部入口启动 Claude 时，只能在发现其运行后提醒。首次使用系统通知需要授权；拒绝通知不影响刘海内提示。网络图标支持打开其他 VPN 工具，当前模式核验针对 Clash Verge。
 
-## 验证与获取
+## 下载与安装
 
-macOS 14+。247 项 Swift 测试、Release 构建通过，已完成假数据界面验收。
+下载下方的 **ClaudeNotch-v1.1.2.dmg**（macOS 14+，Apple Silicon），打开后把 Claude Notch 拖入“应用程序”。
 
-本次发布源码归档及界面效果图，不附带本机自签名应用或修改后的 Claude 客户端。构建方式见[仓库首页](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/tree/v1.1.2#获取)。
+安装包未经 Apple 公证，首次打开会提示无法验证开发者：前往“系统设置 → 隐私与安全性”，在页面下方点“仍要打开”。
+
+安装后从刘海启动 Claude：在 Claude 页点击刘海中的环境盾牌，开启“专属配置”，再点“应用配置并启动 Claude”。从 Dock 直接打开的 Claude 不会应用专属语言、地区和时区。
+
+SHA-256：`6722f69e4bdccb96acabb8f7bddd2d686fe1d7aa755758dd68b25d280e20a627`
+
+## 验证
+
+247 项 Swift 测试、Release 构建通过，已完成假数据界面验收；安装包由 v1.1.2 标签源码构建。安装包不含修改后的 Claude 客户端，网页层核验的适配方式见[仓库说明](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/tree/v1.1.2#专属启动与网页核验)。

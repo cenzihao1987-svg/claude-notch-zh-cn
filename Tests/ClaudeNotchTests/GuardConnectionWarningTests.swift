@@ -271,6 +271,8 @@ import Testing
         }
         #expect(service.connectionMonitor.visibleIssues.count == 2)
         #expect(service.snapshot.networkBehavior.points == 0)
+        service.reconcileRiskBanner()
+        #expect(service.riskBanner.rows.map(\.item.action) == [.openClash, .confirmExit])
         let host = NSHostingView(rootView: NetworkWarningView(service: service, language: .chinese, animate: false, measuredHeight: { _ in }).frame(width: 672))
         #expect(host.fittingSize.width == 672)
         #expect(host.fittingSize.height > 75 && host.fittingSize.height < 240)

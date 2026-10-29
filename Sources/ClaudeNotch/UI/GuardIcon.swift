@@ -21,6 +21,10 @@ enum GuardGlyph: String, CaseIterable {
     case settings, check
     case arrowDown = "arrow-down"
     case refresh = "refresh-cw"
+    case close = "x"
+    case circleCheck = "circle-check"
+    case loader = "loader-circle"
+    case arrowUpRight = "arrow-up-right"
 
     var hasLargeVariant: Bool { [.shieldAlert, .shieldCheck, .shieldQuestion].contains(self) }
 }

@@ -86,6 +86,10 @@ struct GuardConnectionMonitor: Sendable {
     mutating func failedExit() { exitUnknown = true; candidates = [:]; reconcile() }
     mutating func invalidateCandidates() { candidates = [:] }
     mutating func acknowledge() { ignored.formUnion(issues.map(\.id)) }
+    /// Hides one warning; the others stay visible.
+    mutating func acknowledge(_ id: String) {
+        if issues.contains(where: { $0.id == id }) { ignored.insert(id) }
+    }
     mutating func confirmExit() { changes = [:]; candidates = [:]; reconcile() }
     mutating func acceptLaunch(_ exit: GuardExit?) {
         if let exit { baselines[GuardNetworkTracker.family(exit)] = exit }

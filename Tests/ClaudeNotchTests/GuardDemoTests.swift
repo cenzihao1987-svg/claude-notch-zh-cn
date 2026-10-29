@@ -24,9 +24,11 @@ import Testing
             case .sameCountry, .clashRule, .clashUnknown, .connectionCombined:
                 #expect(guardService.configuredRisk.total == 10)
                 #expect(guardService.hasNetworkWarning)
-            case .inactive, .connectionHealthy:
+            case .inactive, .connectionHealthy, .unprotectedLaunch, .welcome:
                 #expect(guardService.configuredRisk.total == 10)
                 #expect(!guardService.hasNetworkWarning)
+            case .unprotectedCombined:
+                #expect(guardService.hasNetworkWarning)
             }
             guardService.ignoreNetworkRisk()
             #expect(!guardService.hasNetworkWarning)

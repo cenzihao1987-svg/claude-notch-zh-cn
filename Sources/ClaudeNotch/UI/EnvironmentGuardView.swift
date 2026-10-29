@@ -47,19 +47,38 @@ extension GuardSummary {
 
 struct EnvironmentGuardBadge: View {
     let model: AppModel
+    var expanded = false
     let onOpen: () -> Void
 
     var body: some View {
         let summary = model.environmentGuard.summary
+        let unprotected = model.showsUnprotectedBadge(expanded: expanded)
+        let orange = Color(red: 0.89, green: 0.58, blue: 0.39)
         Button(action: onOpen) {
-            HStack(spacing: 4) {
-                GuardIcon(summary.glyph, size: 15)
-                if case .attention(let count) = summary {
-                    Text(count > 9 ? "9+" : "\(count)").font(.system(size: 11, weight: .medium)).monospacedDigit()
+            Group {
+                if unprotected && !expanded {
+                    HStack(spacing: 3) {
+                        GuardIcon(.shieldAlert, size: 11)
+                        Text(model.language.text("未防护", "Unprotected")).font(.system(size: 10, weight: .semibold))
+                    }
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(orange.opacity(0.18), in: Capsule())
+                    .foregroundStyle(orange)
+                } else if unprotected {
+                    HStack(spacing: 4) {
+                        GuardIcon(.shieldAlert, size: 15)
+                        Text(model.language.text("未防护", "Unprotected")).font(.system(size: 11, weight: .medium))
+                    }.foregroundStyle(orange)
+                } else {
+                    HStack(spacing: 4) {
+                        GuardIcon(summary.glyph, size: 15)
+                        if case .attention(let count) = summary {
+                            Text(count > 9 ? "9+" : "\(count)").font(.system(size: 11, weight: .medium)).monospacedDigit()
+                        }
+                    }.foregroundStyle(summary.color)
                 }
             }
-            .foregroundStyle(summary.color)
-            .frame(width: 40, height: 24).contentShape(Rectangle())
+            .frame(width: 40 + (unprotected ? model.unprotectedBadgeExtraWidth : 0), height: 24).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(model.language.text("Claude 环境：", "Claude environment: ") + summary.text(model.language))
@@ -188,10 +207,11 @@ struct EnvironmentGuardView: View {
                     }
                 }.frame(width: 177, alignment: .leading)
                 Rectangle().fill(GuardVisual.line).frame(width: 1, height: 37)
-                HStack(spacing: 20) {
+                HStack(spacing: 14) {
                     systemFact(language.text("应用语言", "App language"), value: languageName(service.systemEnvironment.languageCode, includeCode: false)).frame(maxWidth: .infinity, alignment: .leading)
                     systemFact(language.text("地区格式", "Region format"), value: regionName(service.systemEnvironment.localeIdentifier, includeCode: false)).frame(maxWidth: .infinity, alignment: .leading)
-                    systemFact(language.text("系统时区", "System timezone"), value: service.systemEnvironment.timeZoneIdentifier, code: true).frame(width: 235, alignment: .leading)
+                    systemFact(language.text("系统时区", "System timezone"), value: service.systemEnvironment.timeZoneIdentifier, code: true).frame(width: 145, alignment: .leading)
+                    publicIPFact.frame(width: 145, alignment: .leading)
                 }.padding(.leading, 5)
             }.frame(height: 43)
             separator.padding(.top, 13).padding(.bottom, 9)
@@ -207,6 +227,21 @@ struct EnvironmentGuardView: View {
             Text(service.isRechecking ? language.text("读取中…", "Reading…") : value.isEmpty ? "—" : value)
                 .contentTransition(.opacity).animation(resultAnimation, value: service.isRechecking).font(.system(size: code ? 11.5 : 12))
                 .foregroundStyle(GuardVisual.text).lineLimit(1).truncationMode(.middle).help(value)
+        }
+    }
+
+    private var publicIPFact: some View {
+        let address = service.networkChecksEnabled && service.snapshot.networkIsFresh(at: .now)
+            ? service.snapshot.network?.ip.flatMap(GuardExit.normalizedIP) : nil
+        let value = service.isRechecking ? language.text("读取中…", "Reading…") : address ?? "—"
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(language.text("公网 IP", "Public IP")).font(.system(size: 10)).foregroundStyle(GuardVisual.muted)
+            Text(verbatim: value)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(GuardVisual.text).lineLimit(2).minimumScaleFactor(0.75)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                .contentTransition(.opacity).animation(resultAnimation, value: service.isRechecking)
+                .help(value)
         }
     }
 

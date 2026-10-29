@@ -5,6 +5,7 @@ import SwiftUI
 enum GuardDemoScenario: String, CaseIterable, Identifiable {
     case repeated, anomalous, roundTrip, unverified, dualStack, longIPv6, sameCountry, inactive
     case clashRule, clashUnknown, connectionCombined, connectionHealthy
+    case unprotectedLaunch, unprotectedCombined, welcome
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -20,6 +21,9 @@ enum GuardDemoScenario: String, CaseIterable, Identifiable {
         case .clashUnknown: "Clash 模式无法核验"
         case .connectionCombined: "IP 改变＋Clash 非全局"
         case .connectionHealthy: "恢复正常 · 无连接预警"
+        case .unprotectedLaunch: "未从刘海启动 · 以防护重启"
+        case .unprotectedCombined: "未防护＋Clash 非全局"
+        case .welcome: "首次运行 · 欢迎卡"
         }
     }
 }
@@ -55,6 +59,10 @@ final class GuardNotchDemo: NSObject, NSWindowDelegate {
         controls = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 290),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
+        // Two notch overlays would stack; the official notch quits normally and reopens at the end.
+        NSWorkspace.shared.runningApplications
+            .filter { $0.bundleURL?.path == "/Applications/Claude Notch.app" }
+            .forEach { $0.terminate() }
         model.loadGuardDemo(.connectionCombined)
         controls.title = "刘海预警演示 · 假数据"
         controls.isReleasedWhenClosed = false
@@ -96,6 +104,73 @@ final class GuardNotchDemo: NSObject, NSWindowDelegate {
     }
 }
 
+/// Offscreen renders of the notch for comparison with the approved mockup. Synthetic data only;
+/// nothing is launched, quit, or written outside a temporary directory.
+@MainActor
+enum NotchRenderFixture {
+    static func render(_ name: String, to output: String) {
+        let model = GuardNotchDemo.makeModel()
+        let service = model.environmentGuard
+        let scenario: GuardDemoScenario = switch name {
+        case "unprotected", "collapsed": .unprotectedLaunch
+        case "combined": .unprotectedCombined
+        case "welcome": .welcome
+        default: .connectionCombined
+        }
+        model.loadGuardDemo(scenario)
+        service.reconcileRiskBanner()
+        let clashID = service.riskItems.first { $0.action == .openClash }?.id
+        switch name {
+        case "checking": if let clashID { service.openClashForRisk(clashID, language: .chinese) }
+        case "resolved":
+            service.applyClashObservation(.global, activity: .active)
+            service.reconcileRiskBanner()
+        case "allclear":
+            service.applyClashObservation(.global, activity: .active)
+            service.reconcileRiskBanner()
+            service.confirmExitForRisk()
+        default: break
+        }
+        let content: AnyView
+        let presentation = IslandPresentationState(screen: NSScreen.main ?? NSScreen.screens[0])
+        presentation.notchWidth = 185
+        presentation.topInset = 32
+        presentation.isExpanded = name != "collapsed"
+        if name == "hover" {
+            content = AnyView(NetworkWarningView(service: service, language: .chinese, animate: false, measuredHeight: { _ in },
+                initialHoveredRow: clashID).frame(width: 672).padding(24).background(Color.black))
+        } else {
+            content = AnyView(IslandView(model: model, presentation: presentation))
+        }
+        let host = NSHostingView(rootView: content)
+        // 挂在刘海屏上取 Retina 倍率：外接 1x 主屏时，效果图才不会退成 1 倍。
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 600), styleMask: .borderless, backing: .buffered, defer: false, screen: NSScreen.island)
+        window.contentView = host
+        func fit() {
+            let size: NSSize
+            if name == "hover" { size = host.fittingSize }
+            else if presentation.isExpanded { size = NSSize(width: model.expandedIslandWidth, height: 32 + model.expandedDropHeight) }
+            else { size = NSSize(width: model.collapsedIslandWidth(notchWidth: 185), height: 32) }
+            window.setContentSize(size)
+            host.frame = NSRect(origin: .zero, size: size)
+            host.layoutSubtreeIfNeeded()
+        }
+        fit()
+        // Measured banner/welcome heights settle after the first layout pass.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            fit()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                fit()
+                if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                    try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: output))
+                }
+                NSApp.terminate(nil)
+            }
+        }
+    }
+}
+
 private struct GuardDemoControls: View {
     let model: AppModel
     let show: (GuardDemoScenario) -> Void
@@ -116,7 +191,7 @@ private struct GuardDemoControls: View {
                 Spacer()
                 Button("重新触发") { show(scenario) }
             }.font(.system(size: 12))
-            Text(model.environmentGuard.snapshot.desktopActivity == .inactive ? "演示实例未运行，后续出口变化只记录、不新增累计。" : model.environmentGuard.snapshot.client?.pid == nil ? "已模拟关闭 Claude，实际客户端未受影响。" : "可点击刘海中的“关闭”和“忽略”验收交互。")
+            Text(model.environmentGuard.snapshot.desktopActivity == .inactive ? "演示实例未运行，后续出口变化只记录、不新增累计。" : model.environmentGuard.snapshot.client?.pid == nil ? "已模拟关闭 Claude，实际客户端未受影响。" : "可点击行内按钮、悬停一行后点左上角 × 忽略，以及“关闭 Claude”验收交互。")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack {

@@ -19,7 +19,7 @@ MOUNT="$(mktemp -d)"
 cleanup() { hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true; rm -rf "$STAGE" "$MOUNT"; }
 trap cleanup EXIT
 
-echo "▸ Staging v$VERSION…"
+echo "▸ Staging v${VERSION}…"
 ditto "$APP" "$STAGE/Claude Notch.app"
 ln -s /Applications "$STAGE/Applications"
 

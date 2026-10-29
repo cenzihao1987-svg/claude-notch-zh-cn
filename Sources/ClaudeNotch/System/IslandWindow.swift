@@ -175,8 +175,9 @@ final class IslandWindow {
             hoverExitAt = nil
             if model.environmentGuardVisible {
                 let visibleWidth = model.collapsedIslandWidth(notchWidth: presentation.notchWidth)
-                let badge = CGRect(x: (panelWidth + visibleWidth) / 2 + model.collapsedIslandOffset - 12 - 40,
-                                   y: panelHeight - closedH, width: 40, height: closedH)
+                let badgeWidth = model.collapsedGuardBadgeWidth
+                let badge = CGRect(x: (panelWidth + visibleWidth) / 2 + model.collapsedIslandOffset - 12 - badgeWidth,
+                                   y: panelHeight - closedH, width: badgeWidth, height: closedH)
                 // Keep the status control stationary while approaching/clicking it.
                 if badge.contains(mouse) { return }
             }
@@ -194,7 +195,8 @@ final class IslandWindow {
             return
         }
 
-        if presentation.networkDetailsVisible { hoverExitAt = nil; return }
+        // The first-run welcome card stays open until it is answered or the user clicks elsewhere.
+        if presentation.networkDetailsVisible || model.showsWelcome { hoverExitAt = nil; return }
         if let deadline = ignoreHoverExitUntil, Date() < deadline { return }
         ignoreHoverExitUntil = nil
 

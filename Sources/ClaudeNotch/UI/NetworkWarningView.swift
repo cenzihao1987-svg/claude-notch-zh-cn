@@ -1,91 +1,53 @@
+import AppKit
 import SwiftUI
 
-/// Approved bottom warning: intrinsic height, details beside the IP, actions bottom-aligned.
+/// Bottom risk banner: one actionable row per problem, pending → checking → resolved, then an
+/// all-clear. Hovering a row reveals an × that ignores only that row (risk history is kept).
 struct NetworkWarningView: View {
     let service: EnvironmentGuardService
     let language: AppLanguage
     let animate: Bool
     let measuredHeight: (CGFloat) -> Void
     var detailsVisibilityChanged: (Bool) -> Void = { _ in }
-    @State private var showsDetails = false
+    /// Visual checks only: starts with this row's × visible.
+    var initialHoveredRow: String? = nil
+    @State private var detailsRow: String?
+    @State private var hoveredRow: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let orange = Color(red: 0.89, green: 0.58, blue: 0.39)
+    private let sage = Color(red: 0.659, green: 0.761, blue: 0.639)
+    private var banner: GuardRiskBannerState { service.riskBanner }
+    private var allClear: Bool { banner.allClearAt != nil }
+
+    /// Only the breathing border and the icon ripple animate; rows re-render on state changes.
+    private var animationPaused: Bool { reduceMotion || !animate || allClear }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || !animate)) { context in
-            let phase = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.8) / 2.8
-            HStack(alignment: .bottom, spacing: 18) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 7) {
-                        GuardIcon(.shieldAlert, size: 16)
-                            .frame(width: 18, height: 18)
-                            .overlay {
-                                if !reduceMotion {
-                                    Circle().stroke(orange, lineWidth: 1)
-                                        .scaleEffect(0.8 + phase * 0.8)
-                                        .opacity(max(0, 0.35 * (1 - phase * 1.5)))
-                                        .allowsHitTesting(false)
-                                }
-                            }
-                        Text(service.connectionMonitor.visibleIssues.isEmpty ? service.snapshot.networkBehavior.title(language) : language.text("Claude 网络预警", "Claude network warning"))
-                            .font(.system(size: 12, weight: .semibold))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }.foregroundStyle(orange)
-                    Text(service.connectionMonitor.visibleIssues.map { $0.message(language) }.joined(separator: "\n")
-                         + (service.hasGeographicWarning ? (service.connectionMonitor.visibleIssues.isEmpty ? "" : "\n") + service.snapshot.networkBehavior.description(language) : ""))
-                        .font(.system(size: 10.5)).lineSpacing(2)
-                        .foregroundStyle(Color(red: 0.82, green: 0.77, blue: 0.74))
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let change = service.exitAlert {
-                        HStack(spacing: 4) {
-                            Text(verbatim: "\(change.previous.ip) (\(change.previous.country)) → \(change.current.ip) (\(change.current.country))")
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(Color(red: 0.66, green: 0.58, blue: 0.52))
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                            Button { showsDetails.toggle() } label: {
-                                GuardIcon(.circleQuestion, size: 13).frame(width: 22, height: 22)
-                            }
-                                .buttonStyle(.plain).foregroundStyle(orange)
-                                .help(language.text("核验详情", "Verification details"))
-                                .accessibilityLabel(language.text("核验详情", "Verification details"))
-                                .popover(isPresented: $showsDetails, arrowEdge: .top) {
-                                    NetworkWarningDetails(service: service, language: language)
-                                }
-                        }.padding(.top, 2)
-                    }
-                    ForEach(service.connectionMonitor.visibleIssues.filter { $0.change != nil }) { issue in
-                        if let change = issue.change, change != service.exitAlert {
-                            Text(verbatim: "\(change.previous.ip) → \(change.current.ip)")
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(.secondary).textSelection(.enabled)
-                        }
-                    }
-                    if !service.connectionMonitor.visibleIssues.isEmpty, let checked = service.connectionMonitor.checkedAt {
-                        Text(language.text("检测时间：", "Checked: ") + checked.formatted(date: .omitted, time: .standard))
-                            .font(.system(size: 9)).foregroundStyle(.secondary)
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 7) {
-                    Button(language.text("忽略", "Ignore")) { service.ignoreNetworkRisk() }
-                        .buttonStyle(NetworkWarningButtonStyle(primary: false))
-                    Button {
-                        Task { await service.closeClaudeForNetworkRisk(language: language) }
-                    } label: {
-                        Text(service.isClosingClaude ? language.text("正在关闭…", "Closing…") : language.text("关闭", "Close"))
-                    }
-                    .buttonStyle(NetworkWarningButtonStyle(primary: true))
-                    .disabled(service.isClosingClaude || service.snapshot.client?.pid == nil)
-                    .help(language.text("关闭 Claude", "Quit Claude"))
-                }.fixedSize()
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            if allClear {
+                Text(allClearSummary)
+                    .font(.system(size: 10.5)).lineSpacing(2)
+                    .foregroundStyle(Color(red: 0.749, green: 0.816, blue: 0.733))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+            } else {
+                VStack(spacing: 5) {
+                    ForEach(banner.rows) { row in rowView(row) }
+                }.padding(.top, 7)
+                if banner.hasNetworkRows { footer.padding(.top, 8) }
             }
-            .padding(10)
-            .background(Color(red: 0.118, green: 0.075, blue: 0.051), in: RoundedRectangle(cornerRadius: 10))
-            .overlay {
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(allClear ? Color(red: 0.071, green: 0.102, blue: 0.071) : Color(red: 0.118, green: 0.075, blue: 0.051),
+                    in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            TimelineView(.animation(minimumInterval: 1.0 / 24, paused: animationPaused)) { context in
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(orange.opacity(reduceMotion ? 0.6 : 0.2 + (1 - cos(phase * .pi * 2)) * 0.225), lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
+                    .stroke(allClear ? sage.opacity(0.45)
+                            : orange.opacity(reduceMotion ? 0.6 : 0.2 + (1 - cos(Self.phase(context.date) * .pi * 2)) * 0.225), lineWidth: 1)
+            }.allowsHitTesting(false)
         }
         .background {
             GeometryReader { proxy in
@@ -94,7 +56,53 @@ struct NetworkWarningView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-          HStack(spacing: 2) {
+            if banner.hasNetworkRows && !allClear { tools }
+        }
+        .onChange(of: detailsRow) { _, row in detailsVisibilityChanged(row != nil) }
+        .onChange(of: animate) { _, expanded in if !expanded { detailsRow = nil; hoveredRow = nil } }
+        .onChange(of: service.snapshot.networkBehavior.identifier) { _, _ in detailsRow = nil }
+        .onDisappear { detailsVisibilityChanged(false) }
+        .onAppear { if let initialHoveredRow { hoveredRow = initialHoveredRow } }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: banner)
+        .accessibilityElement(children: .contain)
+    }
+
+    private static func phase(_ date: Date) -> Double {
+        date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.8) / 2.8
+    }
+
+    private var header: some View {
+        HStack(spacing: 7) {
+            GuardIcon(allClear ? .shieldCheck : .shieldAlert, size: 16)
+                .frame(width: 18, height: 18)
+                .overlay {
+                    if !reduceMotion && !allClear {
+                        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: animationPaused)) { context in
+                            let phase = Self.phase(context.date)
+                            Circle().stroke(orange, lineWidth: 1)
+                                .scaleEffect(0.8 + phase * 0.8)
+                                .opacity(max(0, 0.35 * (1 - phase * 1.5)))
+                        }.allowsHitTesting(false)
+                    }
+                }
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(allClear ? sage : orange)
+        .frame(minHeight: 22, alignment: .leading)
+    }
+
+    private var title: String {
+        if allClear { return language.text("已全部处理，可以继续使用 Claude", "All handled — Claude is ready to use") }
+        let count = banner.openCount
+        return banner.showsResolvedRows
+            ? language.text("Claude 风险提醒 · 还剩 \(count) 项", "Claude risk alerts · \(count) left")
+            : language.text("Claude 风险提醒 · \(count) 项待处理", "Claude risk alerts · \(count) to handle")
+    }
+
+    private var tools: some View {
+        HStack(spacing: 2) {
             Button { GuardVPNToolOpener.open(language: language) } label: {
                 GuardIcon(.globe, size: 13).frame(width: 22, height: 22)
             }
@@ -103,19 +111,261 @@ struct NetworkWarningView: View {
             .accessibilityLabel(language.text("网络工具", "VPN tool"))
             .disabled(service.isDesignPreview)
             Button {
-                showsDetails = false
+                detailsRow = nil
                 NetworkHistoryWindow.present(service: service, language: language)
             } label: { GuardIcon(.clock, size: 13).frame(width: 22, height: 22) }
                 .buttonStyle(.plain).foregroundStyle(orange.opacity(0.85))
                 .help(language.text("历史日志", "History log"))
                 .accessibilityLabel(language.text("历史日志", "History log"))
-          }.padding(8)
+        }.padding(8)
+    }
+
+    private var footer: some View {
+        HStack(alignment: .bottom, spacing: 12) {
+            if let checked = service.connectionMonitor.checkedAt ?? service.snapshot.network?.fetchedAt {
+                Text(language.text("检测时间 ", "Checked ") + checked.formatted(date: .omitted, time: .standard))
+                    .font(.system(size: 9)).foregroundStyle(Color(red: 0.92, green: 0.92, blue: 0.96).opacity(0.5))
+            }
+            Spacer(minLength: 0)
+            Button {
+                Task { await service.closeClaudeForNetworkRisk(language: language) }
+            } label: {
+                Text(service.isClosingClaude ? language.text("正在关闭…", "Closing…") : language.text("关闭 Claude", "Quit Claude"))
+            }
+            .buttonStyle(NetworkWarningButtonStyle(primary: true))
+            .disabled(service.isClosingClaude || service.snapshot.client?.pid == nil)
+            .fixedSize()
         }
-        .onChange(of: showsDetails) { _, visible in detailsVisibilityChanged(visible) }
-        .onChange(of: animate) { _, expanded in if !expanded { showsDetails = false } }
-        .onChange(of: service.snapshot.networkBehavior.identifier) { _, _ in showsDetails = false }
-        .onDisappear { detailsVisibilityChanged(false) }
+    }
+
+    // MARK: rows
+
+    @ViewBuilder private func rowView(_ row: GuardRiskBannerState.Row) -> some View {
+        let resolved = !row.isOpen
+        HStack(spacing: 9) {
+            statusIcon(row)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(resolved ? resolvedText(row.item) : message(row.item))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(resolved ? sage : Color(red: 0.933, green: 0.890, blue: 0.863))
+                    .fixedSize(horizontal: false, vertical: true)
+                if !resolved, let sub = subtitle(row) {
+                    Text(verbatim: sub.text)
+                        .font(sub.mono ? .system(size: 9.5, design: .monospaced) : .system(size: 9))
+                        .foregroundStyle(sub.mono ? Color(red: 0.659, green: 0.580, blue: 0.522)
+                                         : Color(red: 0.92, green: 0.92, blue: 0.96).opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if case .resolved(let at) = row.phase {
+                Text(language.text("已核验 ", "Verified ") + at.formatted(date: .omitted, time: .standard))
+                    .font(.system(size: 9)).foregroundStyle(Color(red: 0.92, green: 0.92, blue: 0.96).opacity(0.5))
+            } else if case .pending = row.phase {
+                actionButton(row.item)
+            }
+        }
+        .padding(.vertical, 7).padding(.horizontal, 9)
+        .background(rowBackground(row), in: RoundedRectangle(cornerRadius: 7))
+        .overlay(alignment: .topLeading) {
+            if hoveredRow == row.id && row.isOpen {
+                Button { service.ignoreRiskItem(row.id) } label: {
+                    GuardIcon(.close, size: 9)
+                        .foregroundStyle(Color(red: 0.91, green: 0.79, blue: 0.71))
+                        .frame(width: 17, height: 17)
+                        .background(Circle().fill(Color(red: 0.227, green: 0.165, blue: 0.125)))
+                        .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.6), radius: 2, y: 1)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .offset(x: -6, y: -6)
+                .help(language.text("忽略此项", "Ignore this item"))
+                .accessibilityLabel(language.text("忽略此项", "Ignore this item"))
+                .transition(.opacity)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering { hoveredRow = row.id } else if hoveredRow == row.id { hoveredRow = nil }
+        }
         .accessibilityElement(children: .contain)
+        .accessibilityAction(named: Text(language.text("忽略此项", "Ignore this item"))) { service.ignoreRiskItem(row.id) }
+    }
+
+    private func rowBackground(_ row: GuardRiskBannerState.Row) -> Color {
+        if !row.isOpen { return sage.opacity(0.06) }
+        return Color.white.opacity(hoveredRow == row.id ? 0.065 : 0.035)
+    }
+
+    @ViewBuilder private func statusIcon(_ row: GuardRiskBannerState.Row) -> some View {
+        Group {
+            switch row.phase {
+            case .pending: GuardIcon(.circleAlert, size: 14).foregroundStyle(orange)
+            case .checking:
+                if reduceMotion { GuardIcon(.loader, size: 14).foregroundStyle(orange) }
+                else {
+                    TimelineView(.animation) { context in
+                        GuardIcon(.loader, size: 14).foregroundStyle(orange)
+                            .rotationEffect(.degrees(context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1) * 360))
+                    }
+                }
+            case .resolved: GuardIcon(.circleCheck, size: 14).foregroundStyle(sage)
+            }
+        }.frame(width: 16, height: 16)
+    }
+
+    @ViewBuilder private func actionButton(_ item: GuardRiskItem) -> some View {
+        Button { perform(item) } label: {
+            HStack(spacing: 3) {
+                Text(actionTitle(item))
+                if item.action == .openClash { GuardIcon(.arrowUpRight, size: 10) }
+            }
+        }
+        .buttonStyle(RiskRowButtonStyle())
+        .disabled(item.action == .relaunch && (service.isLaunching || service.isClosingClaude))
+        .fixedSize()
+        .popover(isPresented: Binding(get: { detailsRow == item.id }, set: { if !$0 { detailsRow = nil } }), arrowEdge: .top) {
+            NetworkWarningDetails(service: service, language: language)
+        }
+    }
+
+    private func perform(_ item: GuardRiskItem) {
+        switch item.action {
+        case .openClash: service.openClashForRisk(item.id, language: language)
+        case .recheck: service.recheckRisk(item.id)
+        case .confirmExit: service.confirmExitForRisk()
+        case .details: detailsRow = detailsRow == item.id ? nil : item.id
+        case .relaunch:
+            guard case .protection(let state) = item.kind, GuardRestartConfirmation.ask(state: state, language: language) else { return }
+            Task {
+                let launched = await service.relaunchWithProtection(itemID: item.id)
+                if !launched, service.operationFailed { GuardRestartConfirmation.showFailure(service: service, language: language) }
+            }
+        }
+    }
+
+    // MARK: copy
+
+    private func message(_ item: GuardRiskItem) -> String {
+        switch item.kind {
+        case .protection(.profileChanged): language.text("专属配置已变化，重启后生效", "Profile changed; restart to apply")
+        case .protection(.profileOff): language.text("Claude 防护未开启", "Claude protection is off")
+        case .protection: language.text("Claude 未从刘海启动，防护未生效", "Claude wasn't opened from the notch; protection is off")
+        case .clash(.notRunning): language.text("Clash Verge 未运行", "Clash Verge is not running")
+        case .clash(.unknown): language.text("Clash Verge 模式无法核验", "Clash Verge mode unverified")
+        case .clash(let state): language.text("Clash Verge 为\(state.label(language))", "Clash Verge: \(state.label(language))")
+        case .exitUnknown: language.text("当前出口无法确认", "The current exit could not be verified")
+        case .ipChanged: language.text("公网出口 IP 已变化", "The public exit IP changed")
+        case .geography: service.snapshot.networkBehavior.title(language)
+        }
+    }
+
+    private func subtitle(_ row: GuardRiskBannerState.Row) -> (text: String, mono: Bool)? {
+        if case .checking = row.phase {
+            switch row.item.action {
+            case .openClash: return (language.text("已打开 Clash Verge · 切到「全局」后这里会自动更新", "Clash Verge opened · this updates after you switch to Global"), false)
+            case .relaunch: return (language.text("正在以防护重启 Claude…", "Restarting Claude with protection…"), false)
+            default: return (language.text("正在重新检查…", "Checking…"), false)
+            }
+        }
+        let system = service.systemEnvironment
+        switch row.item.kind {
+        case .protection(.notFromNotch(let instances)) where instances > 1:
+            return (language.text("检测到 \(instances) 个 Claude 实例", "\(instances) Claude instances are running"), false)
+        case .protection(.profileChanged):
+            let profile = service.profile
+            return (language.text("重启后使用：", "After restart: ") + GuardDisplayNames.environment(language: profile.languageCode,
+                locale: profile.localeIdentifier, timeZone: profile.timeZoneIdentifier, in: language), false)
+        case .protection:
+            return (language.text("正在使用系统配置：", "Using system settings: ") + GuardDisplayNames.environment(language: system.languageCode,
+                locale: system.localeIdentifier, timeZone: system.timeZoneIdentifier, in: language), false)
+        case .clash(.unknown): return (language.text("本机内核没有响应", "The local core did not respond"), false)
+        case .clash: return (language.text("Claude 的请求可能不走代理", "Claude's requests may bypass the proxy"), false)
+        case .exitUnknown: return (language.text("出口查询失败，保留上次结果", "Lookup failed; the last result is kept"), false)
+        case .ipChanged(let change):
+            return ("\(change.previous.ip) → \(change.current.ip) · " + GuardDisplayNames.country(change.current.country, language: language), true)
+        case .geography:
+            if let change = service.snapshot.networkBehavior.change {
+                return ("\(change.previous.ip) (\(change.previous.country)) → \(change.current.ip) (\(change.current.country))", true)
+            }
+            return (service.snapshot.networkBehavior.description(language), false)
+        }
+    }
+
+    private func actionTitle(_ item: GuardRiskItem) -> String {
+        switch item.kind {
+        case .protection(.profileOff): language.text("开启防护并重启", "Turn on & restart")
+        case .protection: language.text("以防护重启", "Restart protected")
+        case .clash(.notRunning): language.text("启动 Clash Verge", "Open Clash Verge")
+        case .clash(.unknown), .exitUnknown: language.text("重新检查", "Check again")
+        case .clash: language.text("打开 Clash Verge", "Open Clash Verge")
+        case .ipChanged: language.text("是我切换的", "It was me")
+        case .geography: language.text("查看详情", "Details")
+        }
+    }
+
+    private func resolvedText(_ item: GuardRiskItem) -> String {
+        switch item.kind {
+        case .protection: language.text("已以防护启动，专属配置生效", "Restarted with protection")
+        case .clash: language.text("Clash Verge 已切到全局模式", "Clash Verge switched to Global")
+        case .exitUnknown: language.text("已取得当前出口", "Current exit verified")
+        case .ipChanged(let change): language.text("已确认新出口 \(change.current.ip)", "New exit \(change.current.ip) confirmed")
+        case .geography: language.text("出口提醒已解除", "Exit warning cleared")
+        }
+    }
+
+    private var allClearSummary: String {
+        banner.resolvedItems.map { item in
+            switch item.kind {
+            case .protection: language.text("已以防护启动", "Restarted with protection")
+            case .clash: language.text("Clash 全局模式已核验", "Clash Global mode verified")
+            case .exitUnknown: language.text("当前出口已取得", "Current exit verified")
+            case .ipChanged(let change): language.text("出口 \(change.current.ip) 已确认为新基准", "Exit \(change.current.ip) confirmed as the new baseline")
+            case .geography: language.text("出口提醒已解除", "Exit warning cleared")
+            }
+        }.joined(separator: " · ")
+    }
+}
+
+/// Inline row action: orange text on a 16% orange fill.
+private struct RiskRowButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 10))
+            .foregroundStyle(Color(red: 0.89, green: 0.58, blue: 0.39))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Color(red: 0.89, green: 0.58, blue: 0.39).opacity(configuration.isPressed ? 0.26 : 0.16),
+                        in: RoundedRectangle(cornerRadius: 5))
+            .opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
+/// Restart confirmation shared by the banner and the welcome card. Claude quits normally; never forced.
+@MainActor
+enum GuardRestartConfirmation {
+    static func ask(state: GuardProtectionState, language: AppLanguage) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = state == .profileOff
+            ? language.text("开启防护并重启 Claude？", "Turn on protection and restart Claude?")
+            : language.text("以防护重启 Claude？", "Restart Claude with protection?")
+        alert.informativeText = language.text("Claude 会正常退出，再按专属语言、地区和时区启动；进行中的任务可能中断。",
+                                              "Claude quits normally, then starts with your language, region and timezone. Work in progress may be interrupted.")
+        alert.addButton(withTitle: language.text("重启", "Restart"))
+        alert.addButton(withTitle: language.text("取消", "Cancel"))
+        alert.buttons.last?.keyEquivalent = "\u{1b}"
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    static func showFailure(service: EnvironmentGuardService, language: AppLanguage) {
+        let alert = NSAlert()
+        alert.messageText = language.text("未能完成启动", "Could not finish the launch")
+        alert.informativeText = service.operationMessage?.text(language) ?? ""
+        alert.addButton(withTitle: language.text("好", "OK"))
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 }
 

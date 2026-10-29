@@ -252,6 +252,7 @@ struct IslandView: View {
     private var usageAreaWidth: CGFloat {
         guard expanded else { return model.collapsedUsageWidth }
         return (provider.headlineValue == nil ? 88 : 112) + (model.environmentGuardVisible ? 56 : 0)
+            + (model.showsUnprotectedBadge(expanded: true) ? model.unprotectedBadgeExtraWidth : 0)
     }
     /// Loaded once — this is read on every render of the closed row, and hitting the disk per
     /// frame during animations would be pure waste. MainActor because NSImage isn't Sendable.
@@ -417,7 +418,7 @@ struct IslandView: View {
                 .opacity(model.isStale ? 0.5 : 1)
             if model.environmentGuardVisible {
                 Rectangle().fill(.white.opacity(0.16)).frame(width: 1, height: 14)
-                EnvironmentGuardBadge(model: model) {
+                EnvironmentGuardBadge(model: model, expanded: expanded) {
                     let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
                     presentation.isExpanded = false
                     EnvironmentGuardWindow.present(model: model, on: screen)
@@ -492,14 +493,16 @@ struct IslandView: View {
         if item == .claude {
             AvatarView(style: model.avatarStyle,
                        active: item == model.selectedProvider && model.animateIcon
-                           && !model.isPaused && !model.isAtLimit,
+                           && !model.isPaused && !model.isAtLimit
+                           && model.activityState(for: item) != .idle,
                        urgency: model.iconUrgency)
         } else if item == .codex,
                   let icon = model.avatarStyle == .spark ? Self.openAIIcon : Self.codexIcon {
             CodexIconView(
                 image: icon,
                 active: item == model.selectedProvider && model.animateIcon
-                    && !model.isPaused && !model.isAtLimit,
+                    && !model.isPaused && !model.isAtLimit
+                    && model.activityState(for: item) != .idle,
                 urgency: model.iconUrgency
             )
             .foregroundStyle(.white.opacity(model.isPaused ? 0.45 : 0.9))
@@ -537,7 +540,7 @@ struct IslandView: View {
     private var dropDown: some View {
         VStack(spacing: 8) {
             singlePage
-            if model.environmentGuard.hasNetworkWarning {
+            if model.environmentGuard.hasRiskBanner {
                 NetworkWarningView(service: model.environmentGuard, language: language, animate: expanded,
                     measuredHeight: { height in
                         let measured = ceil(height)
@@ -553,7 +556,16 @@ struct IslandView: View {
     }
 
     @ViewBuilder private var singlePage: some View {
-        if provider.provider == .deepseek {
+        if model.showsWelcome {
+            GuardWelcomeView(service: model.environmentGuard, language: language, openEnvironment: {
+                let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+                presentation.isExpanded = false
+                EnvironmentGuardWindow.present(model: model, on: screen)
+            }, measuredHeight: { height in
+                let measured = ceil(height)
+                if abs(model.welcomeHeight - measured) > 0.5 { model.welcomeHeight = measured }
+            })
+        } else if provider.provider == .deepseek {
             deepSeekPage
         } else if provider.provider == .workbuddy {
             workBuddyPage

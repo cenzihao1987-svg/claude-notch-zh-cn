@@ -84,6 +84,22 @@ import Foundation
         ))
     }
 
+    @Test func oldQuotaShowsItsTimestampAndResetDoesNotImplyANewReading() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        #expect(AppModel.claudeUsageFreshAfter == 900)
+        #expect(AppModel.codexUsageFreshAfter == 150)
+        #expect(AppModel.claudeUsageStatus(fetchedAt: now.addingTimeInterval(-14 * 60), resetAt: nil,
+            waiting: false, language: .chinese, now: now) == nil)
+        #expect(AppModel.claudeUsageStatus(fetchedAt: now.addingTimeInterval(-16 * 60), resetAt: nil,
+            waiting: true, language: .chinese, now: now) == "16 分钟前更新")
+        #expect(AppModel.claudeUsageStatus(fetchedAt: now.addingTimeInterval(-120), resetAt: now.addingTimeInterval(-1),
+            waiting: false, language: .chinese, now: now) == "上次读数 · 2 分钟前更新")
+        #expect(AppModel.claudeUsageStatus(fetchedAt: now.addingTimeInterval(-16 * 60), resetAt: nil,
+            waiting: true, language: .english, now: now) == "Updated 16 min ago")
+        #expect(AppModel.claudeUsageStatus(fetchedAt: nil, resetAt: nil,
+            waiting: true, language: .chinese, now: now) == "等待 Claude 客户端更新…")
+    }
+
     /// 回归：旧实现只要磁盘里存在缓存就提前返回，导致缓存过期后永远不会自动兜底。
     @Test func staleDesktopCacheUsesEnabledCredentialFallback() {
         #expect(AppModel.shouldUseClaudeCredentialFallback(

@@ -10,6 +10,8 @@ import Testing
             historyStore: .init(url: directory.appendingPathComponent("history.json")))
         service.loadDesignPreview(running: true, networkWarning: true)
         #expect(service.hasNetworkWarning)
+        service.reconcileRiskBanner()
+        #expect(service.riskBanner.rows.map(\.item.action) == [.details])
         let host = NSHostingView(rootView: NetworkWarningView(service: service, language: .chinese, animate: false,
             measuredHeight: { _ in }).frame(width: 672))
         let size = host.fittingSize

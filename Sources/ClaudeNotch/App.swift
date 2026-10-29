@@ -31,6 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         #if DEBUG
+        if let output = ProcessInfo.processInfo.environment["CLAUDE_NOTCH_NOTCH_RENDER_OUTPUT"],
+           let fixture = ProcessInfo.processInfo.environment["CLAUDE_NOTCH_NOTCH_FIXTURE"] {
+            NotchRenderFixture.render(fixture, to: output)
+            return
+        }
         if GuardNotchDemo.isRequested, let screen = NSScreen.island {
             guardDemo = GuardNotchDemo(model: model, screen: screen)
             return
@@ -41,7 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_DESIGN_FIXTURE"] == "1" {
                 model.environmentGuard.loadDesignPreview(
                     running: ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_RUNNING_FIXTURE"] == "1",
-                    rechecking: ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_RECHECKING_FIXTURE"] == "1")
+                    rechecking: ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_RECHECKING_FIXTURE"] == "1",
+                    ip: ProcessInfo.processInfo.environment["CLAUDE_NOTCH_GUARD_IP_FIXTURE"] ?? "203.0.113.25")
             } else {
                 model.environmentGuard.start()
             }
@@ -95,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       })
         sync()
         observeGuardNetworkWarnings()
+        presentWelcomeIfNeeded()
         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.windows.values.forEach { $0.updateHoverExpansion() } }
         }
@@ -244,12 +251,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         withObservationTracking { _ = model.environmentGuard.networkNoticeGeneration } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                if self.model.environmentGuard.hasNetworkWarning {
+                // Bring the banner up to date first; the notice may arrive before its own reconcile.
+                self.model.environmentGuard.reconcileRiskBanner()
+                if self.model.environmentGuard.hasRiskBanner {
                     let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
                     if let id = screen?.displayID { self.windows[id]?.presentNetworkWarning() }
                 }
                 self.observeGuardNetworkWarnings()
             }
+        }
+    }
+
+    /// First run: open the Claude page in the notch so the welcome card explains how to launch.
+    private func presentWelcomeIfNeeded() {
+        guard model.environmentGuard.showsWelcome else { return }
+        model.selectProvider(.claude, persist: false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, self.model.showsWelcome, let id = NSScreen.island?.displayID else { return }
+            self.windows[id]?.presentNetworkWarning()
         }
     }
 
