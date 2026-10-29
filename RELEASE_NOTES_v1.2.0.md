@@ -31,6 +31,8 @@ Claude、Codex、WorkBuddy、DeepSeek 的额度与余额监测、图表和近期
 
 首次运行按刘海中的欢迎卡完成三步，之后从刘海启动 Claude。从 Dock 直接打开的 Claude 不会应用专属语言、地区和时区。
 
+SHA-256：`41727f5d4342b0f9acab87c602de86d0cb5967e2d2b5e3c19f4bd28b88cadd0d`
+
 ## 验证
 
 271 项 Swift 测试、Release 构建通过，已完成假数据界面验收；安装包由 v1.2.0 标签源码构建。安装包不含修改后的 Claude 客户端，网页层核验的适配方式见[仓库说明](https://github.com/cenzihao1987-svg/claude-notch-zh-cn/tree/v1.2.0#专属启动与网页核验)。
