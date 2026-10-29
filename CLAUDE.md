@@ -38,9 +38,20 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer bash scripts/make-app.s
 
 `swift test` 需要本机已安装的完整 Xcode；只选用 Command Line Tools 会报 `no such module 'Testing'`。
 
-本机已有 `Claude Notch Local` 自签名证书，`make-app.sh` 会自动使用它。它让本机重建后的签名身份保持稳定，但不适合作为公开安装包分发；没有 Developer ID 时，GitHub Release 只发布源码归档。
+本机已有 `Claude Notch Local` 自签名证书，`make-app.sh` 会自动使用它，让每次重建的签名身份保持稳定，公开安装包也用它签名。没有 Developer ID 时安装包未经 Apple 公证，用户首次打开需在「系统设置 → 隐私与安全性」点「仍要打开」，发布说明必须写明。不要用钥匙串里的 `Apple Development` 证书签名：它会把账号邮箱写进签名，且同样无法通过 Gatekeeper。
 
 改完必须跑验证，不要只改不验。每项改动的验证方式写在对应设计文档的「验证方式」小节，逐条实测。
+
+## 发布 GitHub Release（硬性要求）
+
+**每个 Release 必须附带安装包 `ClaudeNotch-v<版本>.dmg`；只有源码归档和效果图不算发布完成。**（2026-10-29 龟要求；v1.1.2 曾漏传。）
+
+1. 从 tag 指向的提交导出干净源码再构建，不用带未提交改动的工作区：`git archive <提交> | tar -x -C <临时目录>`，在其中运行上面的 `make-app.sh`。
+2. `bash scripts/make-dmg.sh "<临时目录>/dist/Claude Notch.app"` 生成 DMG；脚本会校验签名，并挂载 DMG 复核其中的应用。
+3. 发布时带上 DMG：`gh release create <tag> <dmg> …`，补传用 `gh release upload <tag> <dmg>`。
+4. 发布说明写明：下载 DMG → 拖入「应用程序」→ 首次打开的放行步骤；当前构建只支持 Apple Silicon（arm64）；附 DMG 的 SHA-256；安装后从刘海启动 Claude 才会应用专属配置。
+5. 发布后核验：`gh release view <tag> --repo cenzihao1987-svg/claude-notch-zh-cn --json assets` 必须列出该 `.dmg`，下载回来比对 SHA-256，结果写进对应的 `spec/…-publish-validation.json`。
+6. 公开发布本身仍需龟确认（全局红线）；确认的是「发不发」，不是「带不带安装包」。
 
 ## 目录约定
 
